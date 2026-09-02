@@ -1,0 +1,152 @@
+import { useMemo, useState } from "react";
+import {
+  CalendarCheck,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Flag,
+  Plus,
+} from "lucide-react";
+import { completedDateKey, dateFromKey, dateKey } from "./dateUtils";
+import type { Task } from "./types";
+
+interface CalendarViewProps {
+  tasks: Task[];
+  onOpenTask: (task: Task) => void;
+  onNewTask: (date: string) => void;
+}
+
+type CalendarEventKind = "start" | "due" | "completed";
+
+interface CalendarEvent {
+  task: Task;
+  kind: CalendarEventKind;
+  label: string;
+}
+
+const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+function monthDays(month: Date) {
+  const year = month.getFullYear();
+  const monthIndex = month.getMonth();
+  const firstDay = new Date(year, monthIndex, 1);
+  const mondayOffset = (firstDay.getDay() + 6) % 7;
+  return Array.from({ length: 42 }, (_, index) =>
+    new Date(year, monthIndex, index - mondayOffset + 1),
+  );
+}
+
+function eventsForDate(tasks: Task[], day: string): CalendarEvent[] {
+  return tasks.flatMap((task) => {
+    const events: CalendarEvent[] = [];
+    if (task.startDate === day) events.push({ task, kind: "start", label: "开始" });
+    if (task.dueDate === day) events.push({ task, kind: "due", label: "截止" });
+    if (completedDateKey(task.completedAt) === day) {
+      const completedTime = new Intl.DateTimeFormat("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(new Date(task.completedAt!));
+      events.push({ task, kind: "completed", label: `完成 ${completedTime}` });
+    }
+    return events;
+  });
+}
+
+export default function CalendarView({ tasks, onOpenTask, onNewTask }: CalendarViewProps) {
+  const now = new Date();
+  const [month, setMonth] = useState(() => new Date(now.getFullYear(), now.getMonth(), 1));
+  const [selectedDate, setSelectedDate] = useState(dateKey());
+  const days = useMemo(() => monthDays(month), [month]);
+  const selectedEvents = useMemo(
+    () => eventsForDate(tasks, selectedDate),
+    [tasks, selectedDate],
+  );
+
+  const monthPrefix = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
+  const monthStarts = tasks.filter((task) => task.startDate?.startsWith(monthPrefix)).length;
+  const monthCompleted = tasks.filter((task) => completedDateKey(task.completedAt).startsWith(monthPrefix)).length;
+
+  function moveMonth(offset: number) {
+    const next = new Date(month.getFullYear(), month.getMonth() + offset, 1);
+    setMonth(next);
+    setSelectedDate(dateKey(next));
+  }
+
+  function goToday() {
+    const today = new Date();
+    setMonth(new Date(today.getFullYear(), today.getMonth(), 1));
+    setSelectedDate(dateKey(today));
+  }
+
+  return (
+    <section className="calendar-view" aria-label="计划日历">
+      <header className="calendar-toolbar">
+        <div className="calendar-month-title">
+          <span>{month.getFullYear()}</span>
+          <h2>{month.getMonth() + 1}月</h2>
+        </div>
+        <div className="calendar-stats" aria-label="本月概况">
+          <span><Clock3 size={14} />{monthStarts} 项开始</span>
+          <span><CalendarCheck size={14} />{monthCompleted} 项完成</span>
+        </div>
+        <div className="calendar-controls">
+          <button type="button" onClick={() => moveMonth(-1)} aria-label="上个月" title="上个月"><ChevronLeft size={17} /></button>
+          <button className="today-button" type="button" onClick={goToday}>今天</button>
+          <button type="button" onClick={() => moveMonth(1)} aria-label="下个月" title="下个月"><ChevronRight size={17} /></button>
+        </div>
+      </header>
+
+      <div className="calendar-scroll">
+        <div className="calendar-grid">
+          {weekdays.map((weekday) => <div className="weekday" key={weekday}>{weekday}</div>)}
+          {days.map((day) => {
+            const key = dateKey(day);
+            const events = eventsForDate(tasks, key);
+            const isCurrentMonth = day.getMonth() === month.getMonth();
+            return (
+              <div
+                className={`calendar-day ${!isCurrentMonth ? "outside" : ""} ${key === selectedDate ? "selected" : ""}`}
+                key={key}
+              >
+                <button className={`day-number ${key === dateKey() ? "today" : ""}`} type="button" onClick={() => setSelectedDate(key)} aria-label={`选择${key}`}>
+                  {day.getDate()}
+                </button>
+                <div className="day-events">
+                  {events.slice(0, 3).map((event, index) => (
+                    <button className={`calendar-event event-${event.kind}`} type="button" onClick={() => onOpenTask(event.task)} key={`${event.task.id}-${event.kind}-${index}`} title={`${event.label}：${event.task.title}`}>
+                      {event.kind === "completed" && <Check size={10} />}
+                      <span>{event.task.title}</span>
+                    </button>
+                  ))}
+                  {events.length > 3 && <span className="more-events">还有 {events.length - 3} 项</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <section className="day-agenda" aria-label={`${selectedDate}的日程`}>
+        <header>
+          <div>
+            <span>{dateFromKey(selectedDate).getFullYear()}年{dateFromKey(selectedDate).getMonth() + 1}月</span>
+            <h3>{dateFromKey(selectedDate).getDate()}日计划轨迹</h3>
+          </div>
+          <button className="secondary-button" type="button" onClick={() => onNewTask(selectedDate)}><Plus size={15} />添加计划</button>
+        </header>
+        <div className="agenda-list">
+          {selectedEvents.map((event, index) => (
+            <button className={`agenda-item event-${event.kind}`} type="button" key={`${event.task.id}-${event.kind}-${index}`} onClick={() => onOpenTask(event.task)}>
+              <span className="agenda-kind">{event.label}</span>
+              <strong>{event.task.title}</strong>
+              {event.task.priority === "important" && <Flag size={13} fill="currentColor" />}
+            </button>
+          ))}
+          {!selectedEvents.length && <p className="agenda-empty">这一天还没有计划轨迹。</p>}
+        </div>
+      </section>
+    </section>
+  );
+}

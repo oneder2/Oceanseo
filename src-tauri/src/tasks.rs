@@ -1,0 +1,928 @@
+use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
+use uuid::Uuid;
+
+pub const TASK_SCHEMA_VERSION: &str = "1.0.0";
+const LEGACY_MIGRATION_KEY: &str = "tideplan.tasks.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TaskOrigin {
+    pub kind: String,
+    pub label: Option<String>,
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct TaskRecord {
+    pub schema_version: String,
+    pub id: String,
+    pub title: String,
+    pub notes: String,
+    pub horizon: String,
+    pub priority: String,
+    pub start_date: Option<String>,
+    pub due_date: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+    pub origin: Option<TaskOrigin>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskMutation {
+    pub title: String,
+    #[serde(default)]
+    pub notes: String,
+    pub horizon: String,
+    pub priority: String,
+    pub start_date: Option<String>,
+    pub due_date: Option<String>,
+    #[serde(default)]
+    pub origin: Option<TaskOrigin>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum LegacyMigrationResult {
+    Migrated {
+        imported_count: usize,
+        backup_path: Option<String>,
+    },
+    AlreadyMigrated {
+        imported_count: usize,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyTask {
+    id: String,
+    title: String,
+    #[serde(default)]
+    notes: String,
+    horizon: String,
+    priority: String,
+    #[serde(default)]
+    start_date: Option<String>,
+    #[serde(default)]
+    due_date: Option<String>,
+    created_at: String,
+    #[serde(default)]
+    completed_at: Option<String>,
+}
+
+pub struct TaskStore {
+    connection: Mutex<Connection>,
+    backup_dir: PathBuf,
+}
+
+impl TaskStore {
+    pub fn open(database_path: &Path) -> Result<Self, String> {
+        let parent = database_path
+            .parent()
+            .ok_or_else(|| "database_path_invalid".to_string())?;
+        fs::create_dir_all(parent).map_err(|_| "database_directory_unavailable".to_string())?;
+        let connection =
+            Connection::open(database_path).map_err(|_| "database_open_failed".to_string())?;
+        Self::from_connection(connection, parent.join("migration-backups"))
+    }
+
+    #[cfg(test)]
+    fn open_for_test(database_path: &Path, backup_dir: PathBuf) -> Result<Self, String> {
+        let connection =
+            Connection::open(database_path).map_err(|_| "database_open_failed".to_string())?;
+        Self::from_connection(connection, backup_dir)
+    }
+
+    fn from_connection(connection: Connection, backup_dir: PathBuf) -> Result<Self, String> {
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "database_config_failed".to_string())?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
+            .map_err(|_| "database_config_failed".to_string())?;
+
+        let store = Self {
+            connection: Mutex::new(connection),
+            backup_dir,
+        };
+        store.apply_migrations()?;
+        Ok(store)
+    }
+
+    fn apply_migrations(&self) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS tasks (
+                    schema_version TEXT NOT NULL CHECK (schema_version = '1.0.0'),
+                    id TEXT PRIMARY KEY NOT NULL,
+                    title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                    notes TEXT NOT NULL CHECK (length(notes) <= 4000),
+                    horizon TEXT NOT NULL CHECK (horizon IN ('short', 'mid', 'long')),
+                    priority TEXT NOT NULL CHECK (priority IN ('normal', 'important')),
+                    start_date TEXT NULL CHECK (
+                        start_date IS NULL OR start_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                    ),
+                    due_date TEXT NULL CHECK (
+                        due_date IS NULL OR due_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                    ),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT NULL,
+                    origin_kind TEXT NULL CHECK (origin_kind IS NULL OR origin_kind IN ('local', 'migration', 'deep_link')),
+                    origin_label TEXT NULL CHECK (origin_label IS NULL OR length(origin_label) <= 80),
+                    origin_reference TEXT NULL CHECK (
+                        origin_reference IS NULL OR (
+                            length(origin_reference) <= 128 AND
+                            origin_reference NOT GLOB '*[^A-Za-z0-9._:-]*'
+                        )
+                    ),
+                    CHECK (origin_kind IS NOT NULL OR (origin_label IS NULL AND origin_reference IS NULL))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_tasks_active_due
+                    ON tasks(completed_at, due_date, priority, created_at);
+                CREATE INDEX IF NOT EXISTS idx_tasks_horizon_order
+                    ON tasks(horizon, priority, due_date, created_at);
+                CREATE INDEX IF NOT EXISTS idx_tasks_updated
+                    ON tasks(updated_at, id);
+
+                CREATE TABLE IF NOT EXISTS legacy_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    payload_sha256 TEXT NULL,
+                    imported_count INTEGER NOT NULL CHECK (imported_count >= 0),
+                    backup_path TEXT NULL,
+                    migrated_at TEXT NOT NULL
+                );
+
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                    VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+                "#,
+            )
+            .map_err(|_| "database_migration_failed".to_string())
+    }
+
+    pub fn list(&self) -> Result<Vec<TaskRecord>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT schema_version, id, title, notes, horizon, priority,
+                       start_date, due_date, created_at, updated_at, completed_at,
+                       origin_kind, origin_label, origin_reference
+                FROM tasks
+                ORDER BY
+                    CASE priority WHEN 'important' THEN 0 ELSE 1 END,
+                    CASE WHEN due_date IS NULL THEN 1 ELSE 0 END,
+                    due_date ASC,
+                    created_at DESC,
+                    id ASC
+                "#,
+            )
+            .map_err(|_| "task_list_failed".to_string())?;
+        let rows = statement
+            .query_map([], task_from_row)
+            .map_err(|_| "task_list_failed".to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| "task_list_failed".to_string())
+    }
+
+    pub fn get(&self, id: &str) -> Result<TaskRecord, String> {
+        validate_uuid(id).map_err(|_| "task_id_invalid".to_string())?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        connection
+            .query_row(
+                r#"
+                SELECT schema_version, id, title, notes, horizon, priority,
+                       start_date, due_date, created_at, updated_at, completed_at,
+                       origin_kind, origin_label, origin_reference
+                FROM tasks WHERE id = ?1
+                "#,
+                [id],
+                task_from_row,
+            )
+            .optional()
+            .map_err(|_| "task_read_failed".to_string())?
+            .ok_or_else(|| "task_not_found".to_string())
+    }
+
+    pub fn create(&self, mutation: TaskMutation) -> Result<TaskRecord, String> {
+        let now = now_timestamp();
+        let record = TaskRecord {
+            schema_version: TASK_SCHEMA_VERSION.to_string(),
+            id: Uuid::new_v4().to_string(),
+            title: mutation.title,
+            notes: mutation.notes,
+            horizon: mutation.horizon,
+            priority: mutation.priority,
+            start_date: normalize_optional_date(mutation.start_date),
+            due_date: normalize_optional_date(mutation.due_date),
+            created_at: now.clone(),
+            updated_at: now,
+            completed_at: None,
+            origin: mutation.origin.or_else(|| {
+                Some(TaskOrigin {
+                    kind: "local".to_string(),
+                    label: None,
+                    reference: None,
+                })
+            }),
+        };
+        validate_task(&record).map_err(|code| format!("task_invalid:{code}"))?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        insert_task(&connection, &record).map_err(|_| "task_create_failed".to_string())?;
+        Ok(record)
+    }
+
+    pub fn update(&self, id: &str, mutation: TaskMutation) -> Result<TaskRecord, String> {
+        let current = self.get(id)?;
+        let record = TaskRecord {
+            schema_version: current.schema_version,
+            id: current.id,
+            title: mutation.title,
+            notes: mutation.notes,
+            horizon: mutation.horizon,
+            priority: mutation.priority,
+            start_date: normalize_optional_date(mutation.start_date),
+            due_date: normalize_optional_date(mutation.due_date),
+            created_at: current.created_at,
+            updated_at: now_timestamp(),
+            completed_at: current.completed_at,
+            origin: current.origin,
+        };
+        validate_task(&record).map_err(|code| format!("task_invalid:{code}"))?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let changed =
+            update_task_row(&connection, &record).map_err(|_| "task_update_failed".to_string())?;
+        if changed != 1 {
+            return Err("task_not_found".to_string());
+        }
+        Ok(record)
+    }
+
+    pub fn set_completed(&self, id: &str, completed: bool) -> Result<TaskRecord, String> {
+        validate_uuid(id).map_err(|_| "task_id_invalid".to_string())?;
+        let timestamp = now_timestamp();
+        let completed_at = completed.then_some(timestamp.clone());
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let changed = connection
+            .execute(
+                "UPDATE tasks SET completed_at = ?1, updated_at = ?2 WHERE id = ?3",
+                params![completed_at, timestamp, id],
+            )
+            .map_err(|_| "task_completion_failed".to_string())?;
+        if changed != 1 {
+            return Err("task_not_found".to_string());
+        }
+        drop(connection);
+        self.get(id)
+    }
+
+    pub fn delete(&self, id: &str) -> Result<(), String> {
+        validate_uuid(id).map_err(|_| "task_id_invalid".to_string())?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let changed = connection
+            .execute("DELETE FROM tasks WHERE id = ?1", [id])
+            .map_err(|_| "task_delete_failed".to_string())?;
+        if changed != 1 {
+            return Err("task_not_found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn migrate_legacy(
+        &self,
+        raw_payload: Option<&str>,
+    ) -> Result<LegacyMigrationResult, String> {
+        {
+            let connection = self
+                .connection
+                .lock()
+                .map_err(|_| "database_lock_failed".to_string())?;
+            if let Some(count) = connection
+                .query_row(
+                    "SELECT imported_count FROM legacy_migrations WHERE migration_key = ?1",
+                    [LEGACY_MIGRATION_KEY],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|_| "legacy_migration_status_failed".to_string())?
+            {
+                return Ok(LegacyMigrationResult::AlreadyMigrated {
+                    imported_count: count as usize,
+                });
+            }
+        }
+
+        let (payload_hash, backup_path) = match raw_payload {
+            Some(payload) => {
+                let hash = format!("{:x}", Sha256::digest(payload.as_bytes()));
+                fs::create_dir_all(&self.backup_dir)
+                    .map_err(|_| "legacy_backup_directory_failed".to_string())?;
+                let path = self
+                    .backup_dir
+                    .join(format!("tideplan.tasks.v1.{hash}.json"));
+                if !path.exists() {
+                    fs::write(&path, payload.as_bytes())
+                        .map_err(|_| "legacy_backup_write_failed".to_string())?;
+                }
+                (Some(hash), Some(path))
+            }
+            None => (None, None),
+        };
+
+        let records = match raw_payload {
+            Some(payload) => parse_legacy_payload(payload)?,
+            None => Vec::new(),
+        };
+
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "legacy_migration_transaction_failed".to_string())?;
+        if let Some(count) = transaction
+            .query_row(
+                "SELECT imported_count FROM legacy_migrations WHERE migration_key = ?1",
+                [LEGACY_MIGRATION_KEY],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|_| "legacy_migration_status_failed".to_string())?
+        {
+            return Ok(LegacyMigrationResult::AlreadyMigrated {
+                imported_count: count as usize,
+            });
+        }
+        import_legacy_records(&transaction, &records)?;
+        let backup_string = backup_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string());
+        transaction
+            .execute(
+                r#"
+                INSERT INTO legacy_migrations(
+                    migration_key, payload_sha256, imported_count, backup_path, migrated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    LEGACY_MIGRATION_KEY,
+                    payload_hash,
+                    records.len() as i64,
+                    backup_string,
+                    now_timestamp()
+                ],
+            )
+            .map_err(|_| "legacy_migration_record_failed".to_string())?;
+        transaction
+            .commit()
+            .map_err(|_| "legacy_migration_commit_failed".to_string())?;
+
+        Ok(LegacyMigrationResult::Migrated {
+            imported_count: records.len(),
+            backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
+        })
+    }
+}
+
+fn parse_legacy_payload(payload: &str) -> Result<Vec<TaskRecord>, String> {
+    let values: Vec<serde_json::Value> =
+        serde_json::from_str(payload).map_err(|_| "legacy_payload_invalid_json".to_string())?;
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let legacy: LegacyTask = serde_json::from_value(value)
+                .map_err(|_| format!("legacy_record_invalid:{index}:shape"))?;
+            let updated_at = later_timestamp(&legacy.created_at, legacy.completed_at.as_deref())
+                .map_err(|code| format!("legacy_record_invalid:{index}:{code}"))?;
+            let record = TaskRecord {
+                schema_version: TASK_SCHEMA_VERSION.to_string(),
+                id: legacy.id,
+                title: legacy.title,
+                notes: legacy.notes,
+                horizon: legacy.horizon,
+                priority: legacy.priority,
+                start_date: normalize_optional_date(legacy.start_date),
+                due_date: normalize_optional_date(legacy.due_date),
+                created_at: legacy.created_at,
+                updated_at,
+                completed_at: legacy.completed_at,
+                origin: Some(TaskOrigin {
+                    kind: "migration".to_string(),
+                    label: Some("Legacy task import".to_string()),
+                    reference: None,
+                }),
+            };
+            validate_task(&record)
+                .map_err(|code| format!("legacy_record_invalid:{index}:{code}"))?;
+            Ok(record)
+        })
+        .collect()
+}
+
+fn import_legacy_records(
+    transaction: &Transaction<'_>,
+    records: &[TaskRecord],
+) -> Result<(), String> {
+    for (index, record) in records.iter().enumerate() {
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM tasks WHERE id = ?1",
+                [&record.id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|_| "legacy_migration_read_failed".to_string())?
+            .is_some();
+        if exists {
+            return Err(format!("legacy_record_conflict:{index}"));
+        }
+        insert_task(transaction, record)
+            .map_err(|_| format!("legacy_record_insert_failed:{index}"))?;
+    }
+    Ok(())
+}
+
+fn insert_task(connection: &Connection, task: &TaskRecord) -> rusqlite::Result<usize> {
+    let (kind, label, reference) = origin_columns(task.origin.as_ref());
+    connection.execute(
+        r#"
+        INSERT INTO tasks(
+            schema_version, id, title, notes, horizon, priority, start_date, due_date,
+            created_at, updated_at, completed_at, origin_kind, origin_label, origin_reference
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        "#,
+        params![
+            task.schema_version,
+            task.id,
+            task.title,
+            task.notes,
+            task.horizon,
+            task.priority,
+            task.start_date,
+            task.due_date,
+            task.created_at,
+            task.updated_at,
+            task.completed_at,
+            kind,
+            label,
+            reference
+        ],
+    )
+}
+
+fn update_task_row(connection: &Connection, task: &TaskRecord) -> rusqlite::Result<usize> {
+    let (kind, label, reference) = origin_columns(task.origin.as_ref());
+    connection.execute(
+        r#"
+        UPDATE tasks SET
+            title = ?1, notes = ?2, horizon = ?3, priority = ?4,
+            start_date = ?5, due_date = ?6, updated_at = ?7, completed_at = ?8,
+            origin_kind = ?9, origin_label = ?10, origin_reference = ?11
+        WHERE id = ?12
+        "#,
+        params![
+            task.title,
+            task.notes,
+            task.horizon,
+            task.priority,
+            task.start_date,
+            task.due_date,
+            task.updated_at,
+            task.completed_at,
+            kind,
+            label,
+            reference,
+            task.id
+        ],
+    )
+}
+
+fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
+    let origin_kind: Option<String> = row.get(11)?;
+    let origin = match origin_kind {
+        Some(kind) => Some(TaskOrigin {
+            kind,
+            label: row.get(12)?,
+            reference: row.get(13)?,
+        }),
+        None => None,
+    };
+    Ok(TaskRecord {
+        schema_version: row.get(0)?,
+        id: row.get(1)?,
+        title: row.get(2)?,
+        notes: row.get(3)?,
+        horizon: row.get(4)?,
+        priority: row.get(5)?,
+        start_date: row.get(6)?,
+        due_date: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        completed_at: row.get(10)?,
+        origin,
+    })
+}
+
+fn origin_columns(origin: Option<&TaskOrigin>) -> (Option<&str>, Option<&str>, Option<&str>) {
+    match origin {
+        Some(origin) => (
+            Some(origin.kind.as_str()),
+            origin.label.as_deref(),
+            origin.reference.as_deref(),
+        ),
+        None => (None, None, None),
+    }
+}
+
+fn normalize_optional_date(value: Option<String>) -> Option<String> {
+    value.and_then(|date| if date.is_empty() { None } else { Some(date) })
+}
+
+fn validate_task(task: &TaskRecord) -> Result<(), &'static str> {
+    if task.schema_version != TASK_SCHEMA_VERSION {
+        return Err("unsupported_schema_version");
+    }
+    validate_uuid(&task.id)?;
+    let title_length = task.title.chars().count();
+    if title_length == 0 || title_length > 200 {
+        return Err("title_length");
+    }
+    if task.notes.chars().count() > 4000 {
+        return Err("notes_length");
+    }
+    if !matches!(task.horizon.as_str(), "short" | "mid" | "long") {
+        return Err("horizon");
+    }
+    if !matches!(task.priority.as_str(), "normal" | "important") {
+        return Err("priority");
+    }
+    if let Some(value) = task.start_date.as_deref() {
+        validate_date(value)?;
+    }
+    if let Some(value) = task.due_date.as_deref() {
+        validate_date(value)?;
+    }
+    let created = validate_timestamp(&task.created_at)?;
+    let updated = validate_timestamp(&task.updated_at)?;
+    if updated < created {
+        return Err("updated_before_created");
+    }
+    if let Some(value) = task.completed_at.as_deref() {
+        let completed = validate_timestamp(value)?;
+        if completed < created {
+            return Err("completed_before_created");
+        }
+    }
+    if let Some(origin) = &task.origin {
+        if !matches!(origin.kind.as_str(), "local" | "migration" | "deep_link") {
+            return Err("origin_kind");
+        }
+        if origin
+            .label
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 80)
+        {
+            return Err("origin_label_length");
+        }
+        if let Some(reference) = &origin.reference {
+            if reference.len() > 128
+                || !reference
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+            {
+                return Err("origin_reference");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_uuid(value: &str) -> Result<(), &'static str> {
+    Uuid::parse_str(value).map(|_| ()).map_err(|_| "id")
+}
+
+fn validate_date(value: &str) -> Result<(), &'static str> {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map(|_| ())
+        .map_err(|_| "date")
+}
+
+fn validate_timestamp(value: &str) -> Result<DateTime<chrono::FixedOffset>, &'static str> {
+    DateTime::parse_from_rfc3339(value).map_err(|_| "timestamp")
+}
+
+fn later_timestamp(created: &str, completed: Option<&str>) -> Result<String, &'static str> {
+    let created_value = validate_timestamp(created)?;
+    match completed {
+        Some(value) => {
+            let completed_value = validate_timestamp(value)?;
+            Ok(if completed_value > created_value {
+                value.to_string()
+            } else {
+                created.to_string()
+            })
+        }
+        None => Ok(created.to_string()),
+    }
+}
+
+fn now_timestamp() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+#[tauri::command]
+pub fn list_tasks(store: tauri::State<'_, TaskStore>) -> Result<Vec<TaskRecord>, String> {
+    store.list()
+}
+
+#[tauri::command]
+pub fn get_task(id: String, store: tauri::State<'_, TaskStore>) -> Result<TaskRecord, String> {
+    store.get(&id)
+}
+
+#[tauri::command]
+pub fn create_task(
+    mutation: TaskMutation,
+    store: tauri::State<'_, TaskStore>,
+) -> Result<TaskRecord, String> {
+    store.create(mutation)
+}
+
+#[tauri::command]
+pub fn update_task(
+    id: String,
+    mutation: TaskMutation,
+    store: tauri::State<'_, TaskStore>,
+) -> Result<TaskRecord, String> {
+    store.update(&id, mutation)
+}
+
+#[tauri::command]
+pub fn set_task_completed(
+    id: String,
+    completed: bool,
+    store: tauri::State<'_, TaskStore>,
+) -> Result<TaskRecord, String> {
+    store.set_completed(&id, completed)
+}
+
+#[tauri::command]
+pub fn delete_task(id: String, store: tauri::State<'_, TaskStore>) -> Result<(), String> {
+    store.delete(&id)
+}
+
+#[tauri::command]
+pub fn migrate_legacy_tasks(
+    raw_payload: Option<String>,
+    store: tauri::State<'_, TaskStore>,
+) -> Result<LegacyMigrationResult, String> {
+    store.migrate_legacy(raw_payload.as_deref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use tempfile::TempDir;
+
+    fn test_store(temp: &TempDir) -> TaskStore {
+        TaskStore::open_for_test(
+            &temp.path().join("tasks.sqlite3"),
+            temp.path().join("backups"),
+        )
+        .unwrap()
+    }
+
+    fn mutation(title: &str, due_date: Option<&str>) -> TaskMutation {
+        TaskMutation {
+            title: title.to_string(),
+            notes: String::new(),
+            horizon: "short".to_string(),
+            priority: "normal".to_string(),
+            start_date: None,
+            due_date: due_date.map(str::to_string),
+            origin: None,
+        }
+    }
+
+    #[test]
+    fn crud_complete_reopen_and_deterministic_ordering() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let late = store.create(mutation("Late", Some("2026-10-02"))).unwrap();
+        let early = store.create(mutation("Early", Some("2026-09-01"))).unwrap();
+        let mut important_input = mutation("Important", None);
+        important_input.priority = "important".to_string();
+        let important = store.create(important_input).unwrap();
+
+        assert_eq!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .map(|task| task.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![important.id.as_str(), early.id.as_str(), late.id.as_str()]
+        );
+
+        let completed = store.set_completed(&early.id, true).unwrap();
+        assert!(completed.completed_at.is_some());
+        assert!(store
+            .set_completed(&early.id, false)
+            .unwrap()
+            .completed_at
+            .is_none());
+
+        let mut changed = mutation("Early updated", Some("2026-09-02"));
+        changed.notes = "Updated notes".to_string();
+        let updated = store.update(&early.id, changed).unwrap();
+        assert_eq!(updated.title, "Early updated");
+        assert_eq!(updated.created_at, early.created_at);
+
+        store.delete(&late.id).unwrap();
+        assert_eq!(store.list().unwrap().len(), 2);
+        assert_eq!(store.get(&late.id), Err("task_not_found".to_string()));
+    }
+
+    #[test]
+    fn persists_after_restart() {
+        let temp = TempDir::new().unwrap();
+        let database = temp.path().join("tasks.sqlite3");
+        let id = {
+            let store = TaskStore::open_for_test(&database, temp.path().join("backups")).unwrap();
+            store.create(mutation("Persistent", None)).unwrap().id
+        };
+        let reopened = TaskStore::open_for_test(&database, temp.path().join("backups")).unwrap();
+        assert_eq!(reopened.get(&id).unwrap().title, "Persistent");
+    }
+
+    #[test]
+    fn rejects_unsupported_major_and_invalid_dates() {
+        let mut task = TaskRecord {
+            schema_version: "2.0.0".to_string(),
+            id: Uuid::new_v4().to_string(),
+            title: "Version".to_string(),
+            notes: String::new(),
+            horizon: "short".to_string(),
+            priority: "normal".to_string(),
+            start_date: None,
+            due_date: None,
+            created_at: "2026-08-31T12:00:00Z".to_string(),
+            updated_at: "2026-08-31T12:00:00Z".to_string(),
+            completed_at: None,
+            origin: None,
+        };
+        assert_eq!(validate_task(&task), Err("unsupported_schema_version"));
+        task.schema_version = TASK_SCHEMA_VERSION.to_string();
+        task.start_date = Some("2026-02-30".to_string());
+        assert_eq!(validate_task(&task), Err("date"));
+    }
+
+    #[test]
+    fn migrates_valid_payload_exactly_once_and_preserves_identity() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let payload = r#"[{
+            "id":"22222222-2222-4222-8222-222222222222",
+            "title":"Legacy completed",
+            "notes":"kept",
+            "horizon":"mid",
+            "priority":"important",
+            "startDate":"",
+            "dueDate":"2026-09-03",
+            "createdAt":"2026-08-01T09:00:00Z",
+            "completedAt":"2026-08-31T15:30:00Z"
+        }]"#;
+
+        let first = store.migrate_legacy(Some(payload)).unwrap();
+        assert!(matches!(
+            first,
+            LegacyMigrationResult::Migrated {
+                imported_count: 1,
+                ..
+            }
+        ));
+        let task = store.get("22222222-2222-4222-8222-222222222222").unwrap();
+        assert_eq!(task.id, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(task.completed_at.as_deref(), Some("2026-08-31T15:30:00Z"));
+        assert_eq!(task.start_date, None);
+        assert_eq!(task.origin.unwrap().kind, "migration");
+        assert!(matches!(
+            store.migrate_legacy(Some("[]")).unwrap(),
+            LegacyMigrationResult::AlreadyMigrated { imported_count: 1 }
+        ));
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn malformed_migration_keeps_database_unchanged_and_is_retryable() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let existing = store.create(mutation("Existing", None)).unwrap();
+        let malformed = r#"[{
+            "id":"not-a-uuid","title":"Broken","notes":"","horizon":"short",
+            "priority":"normal","startDate":"","dueDate":"","createdAt":"bad",
+            "completedAt":null
+        }]"#;
+        assert_eq!(
+            store.migrate_legacy(Some(malformed)),
+            Err("legacy_record_invalid:0:timestamp".to_string())
+        );
+        assert_eq!(store.list().unwrap().len(), 1);
+        assert!(temp
+            .path()
+            .join("backups")
+            .read_dir()
+            .unwrap()
+            .next()
+            .is_some());
+
+        let valid = format!(
+            r#"[{{"id":"{}","title":"Retried","notes":"","horizon":"long","priority":"normal","startDate":null,"dueDate":null,"createdAt":"2026-08-31T12:00:00Z","completedAt":null}}]"#,
+            Uuid::new_v4()
+        );
+        assert!(matches!(
+            store.migrate_legacy(Some(&valid)).unwrap(),
+            LegacyMigrationResult::Migrated {
+                imported_count: 1,
+                ..
+            }
+        ));
+        assert_eq!(store.list().unwrap().len(), 2);
+        assert_eq!(store.get(&existing.id).unwrap().title, "Existing");
+    }
+
+    #[test]
+    fn concurrent_bootstrap_migrates_exactly_once() {
+        let temp = TempDir::new().unwrap();
+        let store = Arc::new(test_store(&temp));
+        let barrier = Arc::new(Barrier::new(2));
+        let payload = r#"[{"id":"77777777-7777-4777-8777-777777777777","title":"Concurrent","notes":"","horizon":"short","priority":"normal","startDate":null,"dueDate":null,"createdAt":"2026-08-31T12:00:00Z","completedAt":null}]"#;
+
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.migrate_legacy(Some(payload)).unwrap()
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, LegacyMigrationResult::Migrated { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+}
