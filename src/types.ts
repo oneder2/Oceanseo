@@ -1,6 +1,6 @@
 export type Horizon = "short" | "mid" | "long";
 export type Priority = "normal" | "important";
-export type View = "today" | "all" | "calendar" | "meal-planner" | "work-monitor" | "completed";
+export type View = "today" | "all" | "calendar" | "meal-planner" | "shopping-list" | "work-monitor" | "completed";
 
 export interface TaskOrigin {
   kind: "local" | "migration" | "deep_link";
@@ -74,3 +74,26 @@ export interface MealPlan {
   days: MealDay[];
   shoppingList: ShoppingCategory[];
 }
+
+export type PurchaseSource = "manual" | "ai-recipe";
+
+export interface PurchaseItem {
+  id: string;
+  name: string;
+  amount: string;
+  category: string;
+  checked: boolean;
+  source: PurchaseSource;
+  sourceLabel: string | null;
+  sourceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PurchaseItemDraft {
+  name: string;
+  amount: string;
+  category: string;
+}
+
+export type ShoppingExportFormat = "markdown" | "csv";

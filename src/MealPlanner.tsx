@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
+  ArrowRight,
   Check,
   ChefHat,
   ChevronDown,
   ChevronUp,
   KeyRound,
+  ListPlus,
   LoaderCircle,
   RefreshCw,
   ShoppingBasket,
@@ -41,11 +43,13 @@ function itemKey(category: string, name: string) {
 
 interface MealPlannerProps {
   aiConfigured: boolean;
+  onImportShoppingList: (plan: MealPlan) => number;
   onOpenAiSettings: () => void;
+  onOpenShoppingList: () => void;
   onToast: (message: string) => void;
 }
 
-export default function MealPlanner({ aiConfigured, onOpenAiSettings, onToast }: MealPlannerProps) {
+export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpenAiSettings, onOpenShoppingList, onToast }: MealPlannerProps) {
   const [preferences, setPreferences] = useState<MealPreferences>(() =>
     loadStored(PREFERENCES_STORAGE_KEY, defaultPreferences),
   );
@@ -248,7 +252,11 @@ export default function MealPlanner({ aiConfigured, onOpenAiSettings, onToast }:
             <section className="shopping-list" aria-label="采购清单">
               <header>
                 <span><ShoppingBasket size={15} /> 本周采购</span>
-                <strong>{checkedItems.length} / {shoppingCount}</strong>
+                <div className="meal-shopping-actions">
+                  <strong>{checkedItems.length} / {shoppingCount}</strong>
+                  <button type="button" onClick={() => onImportShoppingList(plan)}><ListPlus size={14} />存入采购清单</button>
+                  <button type="button" onClick={onOpenShoppingList} aria-label="查看采购清单" title="查看采购清单"><ArrowRight size={14} /></button>
+                </div>
               </header>
               <div className="shopping-groups">
                 {plan.shoppingList.map((group) => (

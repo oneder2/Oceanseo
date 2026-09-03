@@ -31,6 +31,7 @@ import {
   Search,
   Save,
   Settings,
+  ShoppingBasket,
   Sparkles,
   Trash2,
   X,
@@ -38,6 +39,7 @@ import {
 import CalendarView from "./CalendarView";
 import DatePicker from "./DatePicker";
 import MealPlanner from "./MealPlanner";
+import ShoppingList from "./ShoppingList";
 import WorkMonitorDashboard from "./WorkMonitorDashboard";
 import { getAiSettings, saveAiSettings } from "./aiSettingsStore";
 import type { AiSettings } from "./aiSettingsStore";
@@ -54,7 +56,14 @@ import {
 } from "./taskStore";
 import type { DeepLinkMessage } from "./taskStore";
 import { runScheduledWorkScan } from "./workMonitorStore";
-import type { Horizon, ReminderSettings, Task, TaskDraft, TaskOrigin, View } from "./types";
+import {
+  createPurchaseItem,
+  importMealPlan,
+  loadPurchaseItems,
+  savePurchaseItems,
+  updatePurchaseItem,
+} from "./shoppingStore";
+import type { Horizon, MealPlan, PurchaseItemDraft, ReminderSettings, Task, TaskDraft, TaskOrigin, View } from "./types";
 
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
@@ -170,6 +179,7 @@ export default function App() {
   const [showAiApiKey, setShowAiApiKey] = useState(false);
   const [aiSettingsBusy, setAiSettingsBusy] = useState(false);
   const [aiSettingsError, setAiSettingsError] = useState("");
+  const [purchaseItems, setPurchaseItems] = useState(loadPurchaseItems);
   const [toast, setToast] = useState("");
   const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, reminderSettings);
 
@@ -225,6 +235,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(REMINDER_SETTINGS_KEY, JSON.stringify(reminderSettings));
   }, [reminderSettings]);
+
+  useEffect(() => {
+    savePurchaseItems(purchaseItems);
+  }, [purchaseItems]);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -479,14 +493,41 @@ export default function App() {
     setReminderSettings({ ...reminderSettings, times });
   }
 
+  function addPurchaseItem(draft: PurchaseItemDraft) {
+    const item = createPurchaseItem(draft);
+    if (!item) return false;
+    setPurchaseItems((current) => [item, ...current]);
+    setToast("物品已加入采购清单");
+    return true;
+  }
+
+  function editPurchaseItem(id: string, draft: PurchaseItemDraft) {
+    const current = purchaseItems.find((item) => item.id === id);
+    if (!current) return false;
+    const updated = updatePurchaseItem(current, draft);
+    if (!updated) return false;
+    setPurchaseItems((items) => items.map((item) => item.id === id ? updated : item));
+    setToast("采购物品已更新");
+    return true;
+  }
+
+  function importMealShoppingList(plan: MealPlan) {
+    const result = importMealPlan(purchaseItems, plan);
+    setPurchaseItems(result.items);
+    setToast(result.added ? `已从 AI 食谱导入 ${result.added} 项食材` : "这份食谱已经导入过了");
+    return result.added;
+  }
+
   const title = view === "today"
     ? "今日计划"
     : view === "calendar"
       ? "计划日历"
       : view === "meal-planner"
         ? "AI 一周食谱"
-      : view === "work-monitor"
-        ? "工作观察"
+        : view === "shopping-list"
+          ? "采购清单"
+        : view === "work-monitor"
+          ? "工作观察"
       : view === "completed"
         ? "完成记录"
         : "所有计划";
@@ -499,8 +540,10 @@ export default function App() {
         ? "让开始、截止与完成在时间里留下轨迹。"
         : view === "meal-planner"
           ? "从三餐安排到采购清单，把一周吃饭这件事一次想清楚。"
-        : view === "work-monitor"
-          ? "检查近期项目变化，复盘进展，经你确认后再同步。"
+          : view === "shopping-list"
+            ? "把手动记录和 AI 食谱食材整理成一次清晰的采购。"
+          : view === "work-monitor"
+            ? "检查近期项目变化，复盘进展，经你确认后再同步。"
         : view === "completed"
           ? `已经完成 ${completedTasks.length} 项计划。`
           : "按照时间跨度，安排手边与远方。";
@@ -566,6 +609,11 @@ export default function App() {
               <ChefHat size={18} />
               <span>AI 食谱</span>
             </button>
+            <button className={view === "shopping-list" ? "active" : ""} onClick={() => { setView("shopping-list"); setMobileMenuOpen(false); }}>
+              <ShoppingBasket size={18} />
+              <span>采购清单</span>
+              {purchaseItems.length > 0 && <em>{purchaseItems.filter((item) => !item.checked).length}</em>}
+            </button>
             <button className={view === "work-monitor" ? "active" : ""} onClick={() => { setView("work-monitor"); setMobileMenuOpen(false); }}>
               <Radar size={18} />
               <span>工作观察</span>
@@ -607,7 +655,7 @@ export default function App() {
               <p>{subtitle}</p>
             </div>
             <div className="head-actions">
-              {view !== "calendar" && view !== "meal-planner" && view !== "work-monitor" && (
+              {view !== "calendar" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
                 <label className="search-field">
                   <Search size={17} />
                   <span className="sr-only">搜索计划</span>
@@ -619,7 +667,7 @@ export default function App() {
                   )}
                 </label>
               )}
-              {view !== "meal-planner" && view !== "work-monitor" && (
+              {view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
                 <button className="primary-button" type="button" onClick={() => openNewTask("short")}>
                   <Plus size={18} strokeWidth={2.5} />
                   <span>新计划</span>
@@ -631,7 +679,19 @@ export default function App() {
           {view === "meal-planner" ? (
             <MealPlanner
               aiConfigured={aiSettings?.apiKeyConfigured ?? false}
+              onImportShoppingList={importMealShoppingList}
               onOpenAiSettings={() => setSettingsOpen(true)}
+              onOpenShoppingList={() => setView("shopping-list")}
+              onToast={setToast}
+            />
+          ) : view === "shopping-list" ? (
+            <ShoppingList
+              items={purchaseItems}
+              onAdd={addPurchaseItem}
+              onUpdate={editPurchaseItem}
+              onDelete={(id) => { setPurchaseItems((items) => items.filter((item) => item.id !== id)); setToast("采购物品已删除"); }}
+              onToggle={(id) => setPurchaseItems((items) => items.map((item) => item.id === id ? { ...item, checked: !item.checked, updatedAt: new Date().toISOString() } : item))}
+              onClearCompleted={() => { setPurchaseItems((items) => items.filter((item) => !item.checked)); setToast("已清除完成采购的物品"); }}
               onToast={setToast}
             />
           ) : view === "work-monitor" ? (
