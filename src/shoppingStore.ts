@@ -1,3 +1,6 @@
+import { isTauri } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
+import { writeTextFile } from "@tauri-apps/plugin-fs";
 import type { MealPlan, PurchaseItem, PurchaseItemDraft, ShoppingExportFormat } from "./types";
 
 const STORAGE_KEY = "tideplan.purchase-list.v1";
@@ -153,17 +156,34 @@ function csvContent(items: PurchaseItem[]) {
   return `\uFEFF${rows.join("\r\n")}\r\n`;
 }
 
-export function exportPurchaseItems(items: PurchaseItem[], format: ShoppingExportFormat) {
+export async function exportPurchaseItems(items: PurchaseItem[], format: ShoppingExportFormat) {
   const content = format === "csv" ? csvContent(items) : markdownContent(items);
   const extension = format === "csv" ? "csv" : "md";
+  const fileName = `采购清单-${new Date().toISOString().slice(0, 10)}.${extension}`;
+
+  if (isTauri()) {
+    const outputPath = await save({
+      title: "导出采购清单",
+      defaultPath: fileName,
+      filters: [{
+        name: format === "csv" ? "CSV 表格" : "Markdown 文档",
+        extensions: [extension],
+      }],
+    });
+    if (!outputPath) return false;
+    await writeTextFile(outputPath, content);
+    return true;
+  }
+
   const type = format === "csv" ? "text/csv;charset=utf-8" : "text/markdown;charset=utf-8";
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `采购清单-${new Date().toISOString().slice(0, 10)}.${extension}`;
+  anchor.download = fileName;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+  return true;
 }

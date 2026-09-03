@@ -6,6 +6,7 @@ import {
   Circle,
   Download,
   ListPlus,
+  LoaderCircle,
   PackageCheck,
   Pencil,
   Plus,
@@ -38,6 +39,7 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
   const [editingDraft, setEditingDraft] = useState<PurchaseItemDraft>(emptyDraft);
   const [filter, setFilter] = useState<SourceFilter>("all");
   const [exportFormat, setExportFormat] = useState<ShoppingExportFormat>("markdown");
+  const [exporting, setExporting] = useState(false);
 
   const categories = useMemo(
     () => Array.from(new Set([...DEFAULT_PURCHASE_CATEGORIES, ...items.map((item) => item.category)])),
@@ -78,10 +80,17 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
     if (onUpdate(id, editingDraft)) setEditingId(null);
   }
 
-  function handleExport() {
+  async function handleExport() {
     if (!filteredItems.length) return;
-    exportPurchaseItems(filteredItems, exportFormat);
-    onToast(`采购清单已导出为 ${exportFormat === "csv" ? "CSV" : "Markdown"}`);
+    setExporting(true);
+    try {
+      const saved = await exportPurchaseItems(filteredItems, exportFormat);
+      if (saved) onToast(`采购清单已保存为 ${exportFormat === "csv" ? "CSV" : "Markdown"}`);
+    } catch {
+      onToast("导出失败，请确认目标位置可写后重试");
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -119,7 +128,10 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
         <div className="purchase-tools">
           {completedCount > 0 && <button className="purchase-clear" type="button" onClick={onClearCompleted}><PackageCheck size={15} />清除已采购</button>}
           <label className="purchase-export-select"><select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ShoppingExportFormat)} aria-label="导出格式"><option value="markdown">Markdown</option><option value="csv">CSV</option></select><ChevronDown size={13} /></label>
-          <button className="secondary-button" type="button" disabled={!filteredItems.length} onClick={handleExport}><Download size={15} />导出</button>
+          <button className="secondary-button" type="button" disabled={!filteredItems.length || exporting} onClick={() => void handleExport()}>
+            {exporting ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
+            {exporting ? "正在保存" : "导出到…"}
+          </button>
         </div>
       </div>
 
