@@ -4,6 +4,8 @@ import { writeTextFile } from "@tauri-apps/plugin-fs";
 import type { MealPlan, PurchaseItem, PurchaseItemDraft, ShoppingExportFormat } from "./types";
 
 const STORAGE_KEY = "tideplan.purchase-list.v1";
+const MEAL_PLAN_STORAGE_KEY = "tideplan.meal-plan.v1";
+const MEAL_CHECKED_STORAGE_KEY = "tideplan.shopping-checked.v1";
 
 export const DEFAULT_PURCHASE_CATEGORIES = ["蔬菜水果", "肉蛋水产", "粮油主食", "乳品豆制品", "调味干货", "日用清洁", "其他"];
 
@@ -36,14 +38,49 @@ function isPurchaseItem(value: unknown): value is PurchaseItem {
 export function loadPurchaseItems(): PurchaseItem[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isPurchaseItem) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(isPurchaseItem).filter((item) => item.source === "manual")
+      : [];
   } catch {
     return [];
   }
 }
 
 export function savePurchaseItems(items: PurchaseItem[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(items.filter((item) => item.source === "manual")));
+}
+
+export function loadMealPlan(): MealPlan | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MEAL_PLAN_STORAGE_KEY) ?? "null") as Partial<MealPlan> | null;
+    return parsed
+      && typeof parsed.planTitle === "string"
+      && typeof parsed.weekSummary === "string"
+      && Array.isArray(parsed.days)
+      && Array.isArray(parsed.shoppingList)
+      ? parsed as MealPlan
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveMealPlan(plan: MealPlan | null) {
+  if (plan) localStorage.setItem(MEAL_PLAN_STORAGE_KEY, JSON.stringify(plan));
+  else localStorage.removeItem(MEAL_PLAN_STORAGE_KEY);
+}
+
+export function loadMealCheckedItems(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MEAL_CHECKED_STORAGE_KEY) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveMealCheckedItems(items: string[]) {
+  localStorage.setItem(MEAL_CHECKED_STORAGE_KEY, JSON.stringify(items));
 }
 
 export function createPurchaseItem(draft: PurchaseItemDraft): PurchaseItem | null {
@@ -68,47 +105,49 @@ export function updatePurchaseItem(item: PurchaseItem, draft: PurchaseItemDraft)
   return { ...item, ...normalized, updatedAt: new Date().toISOString() };
 }
 
-function planFingerprint(plan: MealPlan) {
-  const content = JSON.stringify([plan.planTitle, plan.shoppingList]);
+function stableHash(content: string) {
   let hash = 2166136261;
   for (let index = 0; index < content.length; index += 1) {
     hash ^= content.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
-  return `meal-${(hash >>> 0).toString(16)}`;
+  return (hash >>> 0).toString(16);
 }
 
-export function importMealPlan(current: PurchaseItem[], plan: MealPlan) {
-  const sourceId = planFingerprint(plan);
-  const existing = new Set(
-    current
-      .filter((item) => item.sourceId === sourceId)
-      .map((item) => `${item.category}\u0000${item.name}\u0000${item.amount}`),
-  );
-  const now = new Date().toISOString();
-  const imported: PurchaseItem[] = [];
+function planFingerprint(plan: MealPlan) {
+  const content = JSON.stringify([plan.planTitle, plan.shoppingList]);
+  return `meal-${stableHash(content)}`;
+}
 
-  for (const group of plan.shoppingList) {
-    for (const item of group.items) {
+export function mealShoppingItemKey(category: string, name: string) {
+  return `${category}\u0000${name}`;
+}
+
+export function createMealPurchaseItems(plan: MealPlan | null, checkedItems: string[]): PurchaseItem[] {
+  if (!plan) return [];
+  const sourceId = planFingerprint(plan);
+  const checked = new Set(checkedItems);
+  const derived: PurchaseItem[] = [];
+
+  for (const [groupIndex, group] of plan.shoppingList.entries()) {
+    for (const [itemIndex, item] of group.items.entries()) {
       const draft = normalizeDraft({ name: item.name, amount: item.amount, category: group.category });
       if (!draft.name) continue;
-      const key = `${draft.category}\u0000${draft.name}\u0000${draft.amount}`;
-      if (existing.has(key)) continue;
-      existing.add(key);
-      imported.push({
-        id: createId(),
+      const itemKey = mealShoppingItemKey(draft.category, draft.name);
+      derived.push({
+        id: `${sourceId}-${stableHash(`${groupIndex}\u0000${itemIndex}\u0000${itemKey}\u0000${draft.amount}`)}`,
         ...draft,
-        checked: false,
+        checked: checked.has(itemKey),
         source: "ai-recipe",
         sourceLabel: plan.planTitle,
         sourceId,
-        createdAt: now,
-        updatedAt: now,
+        createdAt: sourceId,
+        updatedAt: sourceId,
       });
     }
   }
 
-  return { items: [...imported, ...current], added: imported.length };
+  return derived;
 }
 
 function csvCell(value: string) {

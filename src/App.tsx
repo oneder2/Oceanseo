@@ -24,6 +24,7 @@ import {
   LayoutList,
   Menu,
   Minus,
+  NotebookPen,
   Pin,
   PinOff,
   Plus,
@@ -57,9 +58,14 @@ import {
 import type { DeepLinkMessage } from "./taskStore";
 import { runScheduledWorkScan } from "./workMonitorStore";
 import {
+  createMealPurchaseItems,
   createPurchaseItem,
-  importMealPlan,
+  loadMealCheckedItems,
+  loadMealPlan,
   loadPurchaseItems,
+  mealShoppingItemKey,
+  saveMealCheckedItems,
+  saveMealPlan,
   savePurchaseItems,
   updatePurchaseItem,
 } from "./shoppingStore";
@@ -168,6 +174,9 @@ export default function App() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [taskStoreReady, setTaskStoreReady] = useState(false);
   const [taskBusy, setTaskBusy] = useState(false);
+  const [notebookTaskId, setNotebookTaskId] = useState<string | null>(null);
+  const [notebookNotes, setNotebookNotes] = useState("");
+  const [notebookBusy, setNotebookBusy] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(true);
   const [autostartBusy, setAutostartBusy] = useState(false);
@@ -180,6 +189,8 @@ export default function App() {
   const [aiSettingsBusy, setAiSettingsBusy] = useState(false);
   const [aiSettingsError, setAiSettingsError] = useState("");
   const [purchaseItems, setPurchaseItems] = useState(loadPurchaseItems);
+  const [mealPlan, setMealPlan] = useState(loadMealPlan);
+  const [mealCheckedItems, setMealCheckedItems] = useState(loadMealCheckedItems);
   const [toast, setToast] = useState("");
   const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, reminderSettings);
 
@@ -241,6 +252,14 @@ export default function App() {
   }, [purchaseItems]);
 
   useEffect(() => {
+    saveMealPlan(mealPlan);
+  }, [mealPlan]);
+
+  useEffect(() => {
+    saveMealCheckedItems(mealCheckedItems);
+  }, [mealCheckedItems]);
+
+  useEffect(() => {
     if (!isTauri()) {
       setAutostartAvailable(false);
       return;
@@ -270,6 +289,7 @@ export default function App() {
       if (event.key === "Escape") {
         setEditorOpen(false);
         setSettingsOpen(false);
+        setNotebookTaskId(null);
         setMobileMenuOpen(false);
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
@@ -299,6 +319,15 @@ export default function App() {
   const completedTasks = tasks.filter((task) => task.completedAt);
   const completionRate = tasks.length ? Math.round((completedTasks.length / tasks.length) * 100) : 0;
   const overdueCount = activeTasks.filter(isTaskOverdue).length;
+  const aiPurchaseItems = useMemo(
+    () => createMealPurchaseItems(mealPlan, mealCheckedItems),
+    [mealCheckedItems, mealPlan],
+  );
+  const allPurchaseItems = useMemo(
+    () => [...purchaseItems, ...aiPurchaseItems],
+    [aiPurchaseItems, purchaseItems],
+  );
+  const notebookTask = tasks.find((task) => task.id === notebookTaskId) ?? null;
 
   const visibleTasks = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("zh-CN");
@@ -339,6 +368,35 @@ export default function App() {
     });
     setConfirmDelete(false);
     setEditorOpen(true);
+  }
+
+  function openNotebook(task: Task) {
+    setNotebookTaskId(task.id);
+    setNotebookNotes(task.notes);
+  }
+
+  async function saveNotebook(event: React.FormEvent) {
+    event.preventDefault();
+    const task = tasks.find((item) => item.id === notebookTaskId);
+    if (!task || notebookBusy) return;
+    setNotebookBusy(true);
+    try {
+      const updated = await updateTask(task.id, {
+        title: task.title,
+        notes: notebookNotes,
+        horizon: task.horizon,
+        priority: task.priority,
+        startDate: task.startDate,
+        dueDate: task.dueDate,
+      });
+      setTasks((current) => current.map((item) => item.id === task.id ? updated : item));
+      setNotebookTaskId(null);
+      setToast("事项笔记已保存");
+    } catch {
+      setToast("事项笔记未保存，请稍后重试");
+    } finally {
+      setNotebookBusy(false);
+    }
   }
 
   async function saveTask(event: React.FormEvent) {
@@ -511,11 +569,24 @@ export default function App() {
     return true;
   }
 
-  function importMealShoppingList(plan: MealPlan) {
-    const result = importMealPlan(purchaseItems, plan);
-    setPurchaseItems(result.items);
-    setToast(result.added ? `已从 AI 食谱导入 ${result.added} 项食材` : "这份食谱已经导入过了");
-    return result.added;
+  function handleMealPlanGenerated(plan: MealPlan) {
+    setMealPlan(plan);
+    setMealCheckedItems([]);
+  }
+
+  function toggleMealShoppingItem(key: string) {
+    setMealCheckedItems((items) => items.includes(key) ? items.filter((item) => item !== key) : [...items, key]);
+  }
+
+  function togglePurchaseItem(id: string) {
+    const manualItem = purchaseItems.find((item) => item.id === id);
+    if (manualItem) {
+      setPurchaseItems((items) => items.map((item) => item.id === id ? { ...item, checked: !item.checked, updatedAt: new Date().toISOString() } : item));
+      return;
+    }
+    const mealItem = aiPurchaseItems.find((item) => item.id === id);
+    if (!mealItem) return;
+    toggleMealShoppingItem(mealShoppingItemKey(mealItem.category, mealItem.name));
   }
 
   const title = view === "today"
@@ -612,7 +683,7 @@ export default function App() {
             <button className={view === "shopping-list" ? "active" : ""} onClick={() => { setView("shopping-list"); setMobileMenuOpen(false); }}>
               <ShoppingBasket size={18} />
               <span>采购清单</span>
-              {purchaseItems.length > 0 && <em>{purchaseItems.filter((item) => !item.checked).length}</em>}
+              {allPurchaseItems.length > 0 && <em>{allPurchaseItems.filter((item) => !item.checked).length}</em>}
             </button>
             <button className={view === "work-monitor" ? "active" : ""} onClick={() => { setView("work-monitor"); setMobileMenuOpen(false); }}>
               <Radar size={18} />
@@ -679,18 +750,21 @@ export default function App() {
           {view === "meal-planner" ? (
             <MealPlanner
               aiConfigured={aiSettings?.apiKeyConfigured ?? false}
-              onImportShoppingList={importMealShoppingList}
+              plan={mealPlan}
+              checkedItems={mealCheckedItems}
+              onPlanGenerated={handleMealPlanGenerated}
+              onToggleShoppingItem={toggleMealShoppingItem}
               onOpenAiSettings={() => setSettingsOpen(true)}
               onOpenShoppingList={() => setView("shopping-list")}
               onToast={setToast}
             />
           ) : view === "shopping-list" ? (
             <ShoppingList
-              items={purchaseItems}
+              items={allPurchaseItems}
               onAdd={addPurchaseItem}
               onUpdate={editPurchaseItem}
               onDelete={(id) => { setPurchaseItems((items) => items.filter((item) => item.id !== id)); setToast("采购物品已删除"); }}
-              onToggle={(id) => setPurchaseItems((items) => items.map((item) => item.id === id ? { ...item, checked: !item.checked, updatedAt: new Date().toISOString() } : item))}
+              onToggle={togglePurchaseItem}
               onClearCompleted={() => { setPurchaseItems((items) => items.filter((item) => !item.checked)); setToast("已清除完成采购的物品"); }}
               onToast={setToast}
             />
@@ -758,6 +832,15 @@ export default function App() {
                               <span className="no-date">不设期限</span>
                             )}
                           </span>
+                        </button>
+                        <button
+                          className={`task-notebook-button ${task.notes ? "has-notes" : ""}`}
+                          type="button"
+                          onClick={() => openNotebook(task)}
+                          aria-label={`${task.title}的记事本`}
+                          title={task.notes ? "打开事项笔记" : "添加事项笔记"}
+                        >
+                          <NotebookPen size={15} />
                         </button>
                       </article>
                     ))}
@@ -833,8 +916,8 @@ export default function App() {
               </div>
 
               <label className="form-field">
-                <span>备注 <em>可选</em></span>
-                <textarea rows={3} maxLength={4000} value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} placeholder="补充一些细节……" />
+                <span>记事本内容 <em>可选</em></span>
+                <textarea rows={3} maxLength={4000} value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} placeholder="记录和这件事有关的背景或思路……" />
               </label>
 
               <footer className="modal-actions">
@@ -855,6 +938,40 @@ export default function App() {
                 <button className="secondary-button" type="button" onClick={() => setEditorOpen(false)}>取消</button>
                 <button className="primary-button" type="submit" disabled={!draft.title.trim() || taskBusy}>
                   <Check size={17} />保存计划
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {notebookTask && (
+        <div className="modal-backdrop notebook-backdrop" role="presentation" onMouseDown={() => setNotebookTaskId(null)}>
+          <section className="modal notebook-modal" role="dialog" aria-modal="true" aria-labelledby="notebook-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header className="modal-head notebook-head">
+              <div>
+                <span>事项记事本</span>
+                <h2 id="notebook-title">{notebookTask.title}</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => setNotebookTaskId(null)} aria-label="关闭记事本" title="关闭">
+                <X size={18} />
+              </button>
+            </header>
+            <form className="notebook-form" onSubmit={saveNotebook}>
+              <label htmlFor="task-notebook">相关笔记</label>
+              <textarea
+                id="task-notebook"
+                autoFocus
+                maxLength={4000}
+                value={notebookNotes}
+                onChange={(event) => setNotebookNotes(event.target.value)}
+                placeholder="记录背景、思路、资料位置或下一步……"
+              />
+              <footer>
+                <span>{notebookNotes.length} / 4000</span>
+                <button className="secondary-button" type="button" onClick={() => setNotebookTaskId(null)}>取消</button>
+                <button className="primary-button" type="submit" disabled={notebookBusy}>
+                  <Save size={16} />{notebookBusy ? "正在保存" : "保存笔记"}
                 </button>
               </footer>
             </form>

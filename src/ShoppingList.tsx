@@ -7,6 +7,7 @@ import {
   Download,
   ListPlus,
   LoaderCircle,
+  LockKeyhole,
   PackageCheck,
   Pencil,
   Plus,
@@ -63,6 +64,7 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
   const completedCount = items.filter((item) => item.checked).length;
   const manualCount = items.filter((item) => item.source === "manual").length;
   const aiCount = items.filter((item) => item.source === "ai-recipe").length;
+  const manualCompletedCount = items.filter((item) => item.source === "manual" && item.checked).length;
 
   function addItem(event: React.FormEvent) {
     event.preventDefault();
@@ -99,7 +101,7 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
         <div className="purchase-progress-copy">
           <span><ShoppingBasket size={16} />本次采购</span>
           <strong>{items.length ? `${items.length - completedCount} 项待采购` : "清单还是空的"}</strong>
-          <p>{items.length ? `已完成 ${completedCount} 项，共 ${items.length} 项` : "先在下方添加物品，或从 AI 食谱导入。"}</p>
+          <p>{items.length ? `已完成 ${completedCount} 项，共 ${items.length} 项` : "先在下方添加物品，或生成一份 AI 食谱。"}</p>
         </div>
         <div className="purchase-tally" aria-label="来源统计">
           <span><i className="manual" />手动<strong>{manualCount}</strong></span>
@@ -126,7 +128,7 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
           <button type="button" className={filter === "ai-recipe" ? "active" : ""} onClick={() => setFilter("ai-recipe")} role="tab" aria-selected={filter === "ai-recipe"}>AI 食谱 <span>{aiCount}</span></button>
         </div>
         <div className="purchase-tools">
-          {completedCount > 0 && <button className="purchase-clear" type="button" onClick={onClearCompleted}><PackageCheck size={15} />清除已采购</button>}
+          {manualCompletedCount > 0 && <button className="purchase-clear" type="button" onClick={onClearCompleted}><PackageCheck size={15} />清除手动已采购</button>}
           <label className="purchase-export-select"><select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ShoppingExportFormat)} aria-label="导出格式"><option value="markdown">Markdown</option><option value="csv">CSV</option></select><ChevronDown size={13} /></label>
           <button className="secondary-button" type="button" disabled={!filteredItems.length || exporting} onClick={() => void handleExport()}>
             {exporting ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
@@ -156,7 +158,11 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
                   </button>
                   <div className="purchase-item-copy"><strong>{item.name}</strong><span>{item.source === "ai-recipe" ? <><Sparkles size={11} />AI 食谱 · {item.sourceLabel}</> : "手动添加"}</span></div>
                   <span className="purchase-amount">{item.amount || "未填写"}</span>
-                  <span className="purchase-row-actions"><button type="button" onClick={() => beginEdit(item)} aria-label={`编辑 ${item.name}`} title="编辑"><Pencil size={14} /></button><button type="button" onClick={() => onDelete(item.id)} aria-label={`删除 ${item.name}`} title="删除"><Trash2 size={14} /></button></span>
+                  {item.source === "manual" ? (
+                    <span className="purchase-row-actions"><button type="button" onClick={() => beginEdit(item)} aria-label={`编辑 ${item.name}`} title="编辑"><Pencil size={14} /></button><button type="button" onClick={() => onDelete(item.id)} aria-label={`删除 ${item.name}`} title="删除"><Trash2 size={14} /></button></span>
+                  ) : (
+                    <span className="purchase-derived-state" title="此物品由当前 AI 食谱管理"><LockKeyhole size={12} />食谱同步</span>
+                  )}
                 </article>
               ))}
             </div>
@@ -167,7 +173,7 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
           <div className="purchase-empty">
             {filter === "ai-recipe" ? <Sparkles size={23} /> : filter === "manual" ? <ListPlus size={23} /> : <ShoppingBasket size={23} />}
             <strong>{filter === "all" ? "开始准备下一次采购" : "这个来源下还没有物品"}</strong>
-            <span>{filter === "all" ? "手动添加需要购买的物品，或在 AI 食谱中导入食材。" : "切换到其他来源，或添加新的采购物品。"}</span>
+            <span>{filter === "all" ? "手动添加需要购买的物品，AI 食谱食材会自动出现在这里。" : "切换到其他来源，或添加新的采购物品。"}</span>
           </div>
         )}
       </div>

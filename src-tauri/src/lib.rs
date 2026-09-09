@@ -19,7 +19,7 @@ struct MealPreferences {
     people: u8,
     dietary_preference: String,
     allergies: String,
-    budget: String,
+    budget: u32,
     health_goal: String,
 }
 
@@ -147,15 +147,18 @@ async fn generate_meal_plan(
     if !(1..=12).contains(&preferences.people) {
         return Err("用餐人数需要在 1 到 12 人之间。".into());
     }
+    if !(1..=1_000_000).contains(&preferences.budget) {
+        return Err("每周预算需要在 1 到 1000000 元之间。".into());
+    }
 
     let user_prompt = format!(
         "请制定适合未来一周的三餐计划，并据此汇总一次性采购清单。\n\
-        用餐人数：{} 人\n饮食偏好：{}\n过敏或忌口：{}\n每周预算：{}\n营养目标：{}\n\
+        用餐人数：{} 人\n饮食偏好：{}\n过敏或忌口：{}\n每周预算：{} 元\n营养目标：{}\n\
         要求：使用中国家庭容易采购的食材；数量按人数估算；三餐尽量不重复；采购清单合并相同食材；只使用简体中文。",
         preferences.people,
         preferences.dietary_preference.trim(),
         preferences.allergies.trim(),
-        preferences.budget.trim(),
+        preferences.budget,
         preferences.health_goal.trim(),
     );
 

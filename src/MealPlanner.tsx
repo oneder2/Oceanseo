@@ -7,24 +7,22 @@ import {
   ChevronDown,
   ChevronUp,
   KeyRound,
-  ListPlus,
   LoaderCircle,
   RefreshCw,
   ShoppingBasket,
   Sparkles,
   Utensils,
 } from "lucide-react";
+import { mealShoppingItemKey } from "./shoppingStore";
 import type { MealPlan, MealPreferences } from "./types";
 
-const PLAN_STORAGE_KEY = "tideplan.meal-plan.v1";
 const PREFERENCES_STORAGE_KEY = "tideplan.meal-preferences.v1";
-const CHECKED_STORAGE_KEY = "tideplan.shopping-checked.v1";
 
 const defaultPreferences: MealPreferences = {
   people: 2,
   dietaryPreference: "家常均衡",
   allergies: "无",
-  budget: "适中",
+  budget: 500,
   healthGoal: "营养均衡",
 };
 
@@ -37,26 +35,36 @@ function loadStored<T>(key: string, fallback: T): T {
   }
 }
 
-function itemKey(category: string, name: string) {
-  return `${category}\u0000${name}`;
+function loadPreferences(): MealPreferences {
+  const stored = loadStored<Omit<Partial<MealPreferences>, "budget"> & { budget?: number | string }>(PREFERENCES_STORAGE_KEY, {});
+  const legacyBudgets: Record<string, number> = { 节省: 300, 适中: 500, 宽裕: 800 };
+  const budget = typeof stored.budget === "number"
+    ? stored.budget
+    : legacyBudgets[String(stored.budget)] ?? defaultPreferences.budget;
+  return {
+    people: typeof stored.people === "number" ? stored.people : defaultPreferences.people,
+    dietaryPreference: typeof stored.dietaryPreference === "string" ? stored.dietaryPreference : defaultPreferences.dietaryPreference,
+    allergies: typeof stored.allergies === "string" ? stored.allergies : defaultPreferences.allergies,
+    budget,
+    healthGoal: typeof stored.healthGoal === "string" ? stored.healthGoal : defaultPreferences.healthGoal,
+  };
 }
 
 interface MealPlannerProps {
   aiConfigured: boolean;
-  onImportShoppingList: (plan: MealPlan) => number;
+  plan: MealPlan | null;
+  checkedItems: string[];
+  onPlanGenerated: (plan: MealPlan) => void;
+  onToggleShoppingItem: (key: string) => void;
   onOpenAiSettings: () => void;
   onOpenShoppingList: () => void;
   onToast: (message: string) => void;
 }
 
-export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpenAiSettings, onOpenShoppingList, onToast }: MealPlannerProps) {
-  const [preferences, setPreferences] = useState<MealPreferences>(() =>
-    loadStored(PREFERENCES_STORAGE_KEY, defaultPreferences),
-  );
-  const [plan, setPlan] = useState<MealPlan | null>(() => loadStored<MealPlan | null>(PLAN_STORAGE_KEY, null));
-  const [checkedItems, setCheckedItems] = useState<string[]>(() => loadStored(CHECKED_STORAGE_KEY, []));
+export default function MealPlanner({ aiConfigured, plan, checkedItems, onPlanGenerated, onToggleShoppingItem, onOpenAiSettings, onOpenShoppingList, onToast }: MealPlannerProps) {
+  const [preferences, setPreferences] = useState<MealPreferences>(loadPreferences);
   const [selectedDay, setSelectedDay] = useState(0);
-  const [formOpen, setFormOpen] = useState(() => !localStorage.getItem(PLAN_STORAGE_KEY));
+  const [formOpen, setFormOpen] = useState(() => !plan);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -64,22 +72,25 @@ export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpen
     localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
   }, [preferences]);
 
-  useEffect(() => {
-    if (plan) localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(plan));
-  }, [plan]);
-
-  useEffect(() => {
-    localStorage.setItem(CHECKED_STORAGE_KEY, JSON.stringify(checkedItems));
-  }, [checkedItems]);
-
   const shoppingCount = useMemo(
     () => plan?.shoppingList.reduce((total, group) => total + group.items.length, 0) ?? 0,
     [plan],
+  );
+  const checkedShoppingCount = useMemo(
+    () => plan?.shoppingList.reduce(
+      (total, group) => total + group.items.filter((item) => checkedItems.includes(mealShoppingItemKey(group.category, item.name))).length,
+      0,
+    ) ?? 0,
+    [checkedItems, plan],
   );
 
   async function generatePlan(event: React.FormEvent) {
     event.preventDefault();
     setError("");
+    if (!Number.isInteger(preferences.budget) || preferences.budget < 1 || preferences.budget > 1_000_000) {
+      setError("每周预算需要填写 1 到 1000000 元之间的整数。");
+      return;
+    }
     if (!aiConfigured) {
       setError("请先在偏好设置中配置 AI 服务。");
       return;
@@ -94,8 +105,7 @@ export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpen
       const result = await invoke<MealPlan>("generate_meal_plan", {
         preferences,
       });
-      setPlan(result);
-      setCheckedItems([]);
+      onPlanGenerated(result);
       setSelectedDay(0);
       setFormOpen(false);
       onToast("一周食谱与采购清单已生成");
@@ -104,12 +114,6 @@ export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpen
     } finally {
       setLoading(false);
     }
-  }
-
-  function toggleShoppingItem(key: string) {
-    setCheckedItems((current) =>
-      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
-    );
   }
 
   const day = plan?.days[selectedDay];
@@ -126,7 +130,7 @@ export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpen
           <span className="meal-setup-icon"><Sparkles size={16} /></span>
           <span>
             <strong>{plan ? "调整生成条件" : "告诉 AI 你的用餐习惯"}</strong>
-            <small>{preferences.people} 人 · {preferences.dietaryPreference} · {preferences.budget}预算</small>
+            <small>{preferences.people} 人 · {preferences.dietaryPreference} · {preferences.budget} 元/周</small>
           </span>
           {formOpen ? <ChevronUp size={17} /> : <ChevronDown size={17} />}
         </button>
@@ -153,13 +157,12 @@ export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpen
                   <option>低碳水</option>
                 </select>
               </label>
-              <label className="meal-field">
+              <label className="meal-field budget-field">
                 <span>每周预算</span>
-                <select value={preferences.budget} onChange={(event) => setPreferences({ ...preferences, budget: event.target.value })}>
-                  <option>节省</option>
-                  <option>适中</option>
-                  <option>宽裕</option>
-                </select>
+                <span className="meal-number-input">
+                  <input type="number" min={1} max={1000000} step={10} value={preferences.budget} onChange={(event) => setPreferences({ ...preferences, budget: Number(event.target.value) })} aria-label="每周预算金额" />
+                  <em>元</em>
+                </span>
               </label>
               <label className="meal-field">
                 <span>营养目标</span>
@@ -179,7 +182,7 @@ export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpen
 
             <div className="meal-generate-row">
               {error ? <p className="meal-error" role="alert">{error}</p> : <span />}
-              <button className="primary-button meal-generate-button" type="submit" disabled={loading || !aiConfigured}>
+              <button className="primary-button meal-generate-button" type="submit" disabled={loading || !aiConfigured || preferences.budget < 1 || preferences.budget > 1_000_000}>
                 {loading ? <LoaderCircle className="spin" size={16} /> : plan ? <RefreshCw size={16} /> : <Sparkles size={16} />}
                 <span>{loading ? "正在安排一周三餐…" : plan ? "重新生成" : "生成一周食谱"}</span>
               </button>
@@ -253,8 +256,8 @@ export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpen
               <header>
                 <span><ShoppingBasket size={15} /> 本周采购</span>
                 <div className="meal-shopping-actions">
-                  <strong>{checkedItems.length} / {shoppingCount}</strong>
-                  <button type="button" onClick={() => onImportShoppingList(plan)}><ListPlus size={14} />存入采购清单</button>
+                  <strong>{checkedShoppingCount} / {shoppingCount}</strong>
+                  <span className="meal-shopping-sync"><Sparkles size={12} />自动同步</span>
                   <button type="button" onClick={onOpenShoppingList} aria-label="查看采购清单" title="查看采购清单"><ArrowRight size={14} /></button>
                 </div>
               </header>
@@ -264,11 +267,11 @@ export default function MealPlanner({ aiConfigured, onImportShoppingList, onOpen
                     <h3>{group.category}</h3>
                     <div>
                       {group.items.map((item) => {
-                        const key = itemKey(group.category, item.name);
+                        const key = mealShoppingItemKey(group.category, item.name);
                         const checked = checkedItems.includes(key);
                         return (
                           <label className={checked ? "is-checked" : ""} key={key}>
-                            <input type="checkbox" checked={checked} onChange={() => toggleShoppingItem(key)} />
+                            <input type="checkbox" checked={checked} onChange={() => onToggleShoppingItem(key)} />
                             <span className="shopping-check" aria-hidden="true">{checked && <Check size={11} strokeWidth={3} />}</span>
                             <strong>{item.name}</strong>
                             <small>{item.amount}</small>

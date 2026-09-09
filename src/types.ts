@@ -41,7 +41,7 @@ export interface MealPreferences {
   people: number;
   dietaryPreference: string;
   allergies: string;
-  budget: string;
+  budget: number;
   healthGoal: string;
 }
 

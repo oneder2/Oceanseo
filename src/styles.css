@@ -875,7 +875,7 @@ button:disabled {
 .task-card {
   min-height: 94px;
   display: grid;
-  grid-template-columns: 27px minmax(0, 1fr);
+  grid-template-columns: 27px minmax(0, 1fr) 28px;
   padding: 14px 13px 12px;
   overflow: hidden;
   border: 1px solid rgba(48, 55, 46, 0.11);
@@ -988,6 +988,27 @@ button:disabled {
 .task-card.is-completed .task-title-row strong {
   color: #888c85;
   text-decoration: line-through;
+}
+
+.task-notebook-button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  align-self: start;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #a1a59e;
+  cursor: pointer;
+}
+
+.task-notebook-button:hover,
+.task-notebook-button.has-notes {
+  border-color: rgba(93, 120, 145, 0.18);
+  background: rgba(93, 120, 145, 0.08);
+  color: var(--blue);
 }
 
 .empty-column {
@@ -1446,6 +1467,71 @@ button:disabled {
   align-items: center;
   gap: 8px;
   padding-top: 3px;
+}
+
+.notebook-modal {
+  width: min(620px, 100%);
+  overflow: hidden;
+}
+
+.notebook-head {
+  border-bottom-color: rgba(93, 120, 145, 0.2);
+  background: rgba(234, 238, 232, 0.55);
+}
+
+.notebook-head > div {
+  min-width: 0;
+}
+
+.notebook-head h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modal .notebook-form {
+  gap: 10px;
+  padding-top: 18px;
+}
+
+.notebook-form > label {
+  color: #626960;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.notebook-form textarea {
+  width: 100%;
+  min-height: 310px;
+  resize: vertical;
+  padding: 3px 17px 15px 38px;
+  border: 1px solid rgba(76, 91, 73, 0.14);
+  border-radius: 6px;
+  outline: 0;
+  background-color: rgba(255, 255, 255, 0.72);
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 27px, rgba(93, 120, 145, 0.13) 27px, rgba(93, 120, 145, 0.13) 28px);
+  color: #3b423c;
+  font-family: "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+  font-size: 13px;
+  line-height: 28px;
+}
+
+.notebook-form textarea:focus {
+  border-color: rgba(93, 120, 145, 0.5);
+  background-color: #fff;
+}
+
+.notebook-form > footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notebook-form > footer > span {
+  margin-right: auto;
+  color: #92978f;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
 }
 
 .action-spacer {
@@ -1928,6 +2014,26 @@ button:disabled {
   background: #fff;
 }
 
+.meal-number-input {
+  min-width: 0;
+  position: relative;
+}
+
+.meal-number-input input {
+  padding-right: 31px;
+}
+
+.meal-number-input em {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  color: #858a82;
+  font-size: 9px;
+  font-style: normal;
+  pointer-events: none;
+}
+
 .meal-input-with-action {
   min-width: 0;
   position: relative;
@@ -2218,6 +2324,24 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.meal-shopping-sync {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid rgba(112, 139, 120, 0.2);
+  border-radius: 5px;
+  background: rgba(112, 139, 120, 0.08);
+  color: #5d7463;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.shopping-list > header .meal-shopping-sync svg {
+  color: var(--sage);
 }
 
 .meal-shopping-actions button {
@@ -2787,6 +2911,17 @@ button:disabled {
 }
 
 .purchase-row-actions button:last-child:hover { color: #b45143; }
+
+.purchase-derived-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  color: #9a8354;
+  font-size: 9px;
+  font-weight: 650;
+  white-space: nowrap;
+}
 
 .purchase-row.is-checked .purchase-item-copy strong,
 .purchase-row.is-checked .purchase-amount {
@@ -3773,6 +3908,20 @@ button:disabled {
   .purchase-row:not(.purchase-edit-row) .purchase-row-actions {
     grid-column: 4;
     grid-row: 1 / span 2;
+  }
+
+  .purchase-derived-state {
+    grid-column: 4;
+    grid-row: 1 / span 2;
+    justify-content: center;
+    font-size: 0;
+  }
+
+  .purchase-derived-state svg { width: 14px; height: 14px; }
+
+  .notebook-form textarea {
+    min-height: 260px;
+    padding-left: 22px;
   }
 
   .purchase-edit-row {
