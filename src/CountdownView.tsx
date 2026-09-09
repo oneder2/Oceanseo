@@ -108,11 +108,13 @@ export default function CountdownView({ countdowns, selectedCountdownId, onChang
         <div className="countdown-list">
           {sortedCountdowns.map((countdown) => {
             const days = countdownDays(countdown.targetDate);
+            const distance = Math.abs(days);
+            const digitCount = days === 0 ? 1 : String(distance).length;
             return (
               <article className={`countdown-row ${directionClass(days)}`} key={countdown.id}>
                 <div className="countdown-distance">
                   <span>{days === 0 ? "TODAY" : days > 0 ? "TO GO" : "SINCE"}</span>
-                  <strong>{days === 0 ? "今" : Math.abs(days)}</strong>
+                  <strong className={`digits-${Math.min(digitCount, 7)}`}>{days === 0 ? "今" : distance}</strong>
                   <small>天</small>
                 </div>
                 <div className="countdown-copy">

@@ -889,7 +889,7 @@ button:disabled {
 .countdown-row {
   min-height: 114px;
   display: grid;
-  grid-template-columns: 86px minmax(0, 1fr) 68px;
+  grid-template-columns: 112px minmax(0, 1fr) 68px;
   align-items: center;
   gap: 21px;
   padding: 15px 13px 15px 0;
@@ -920,12 +920,29 @@ button:disabled {
 }
 
 .countdown-distance strong {
-  overflow: hidden;
+  min-width: 0;
   color: #344c3c;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 28px;
+  font-variant-numeric: tabular-nums;
   line-height: 1.1;
-  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.countdown-distance strong.digits-4 {
+  font-size: 24px;
+}
+
+.countdown-distance strong.digits-5 {
+  font-size: 21px;
+}
+
+.countdown-distance strong.digits-6 {
+  font-size: 18px;
+}
+
+.countdown-distance strong.digits-7 {
+  font-size: 16px;
 }
 
 .countdown-distance small {
@@ -4059,18 +4076,23 @@ button:disabled {
   }
 
   .countdown-row {
-    grid-template-columns: 68px minmax(0, 1fr) 34px;
-    gap: 12px;
+    grid-template-columns: 94px minmax(0, 1fr) 34px;
+    gap: 10px;
     padding-right: 2px;
   }
 
   .countdown-distance {
-    padding: 7px 9px;
+    padding: 7px 8px;
   }
 
   .countdown-distance strong {
     font-size: 23px;
   }
+
+  .countdown-distance strong.digits-4 { font-size: 20px; }
+  .countdown-distance strong.digits-5 { font-size: 17px; }
+  .countdown-distance strong.digits-6 { font-size: 15px; }
+  .countdown-distance strong.digits-7 { font-size: 13px; }
 
   .countdown-edit {
     width: 32px;
