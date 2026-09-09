@@ -6,24 +6,23 @@ import {
   ChevronRight,
   Clock3,
   Flag,
+  Hourglass,
   Plus,
 } from "lucide-react";
 import { completedDateKey, dateFromKey, dateKey } from "./dateUtils";
-import type { Task } from "./types";
+import type { Countdown, Task } from "./types";
 
 interface CalendarViewProps {
   tasks: Task[];
+  countdowns: Countdown[];
   onOpenTask: (task: Task) => void;
+  onOpenCountdown: (countdown: Countdown) => void;
   onNewTask: (date: string) => void;
 }
 
-type CalendarEventKind = "start" | "due" | "completed";
-
-interface CalendarEvent {
-  task: Task;
-  kind: CalendarEventKind;
-  label: string;
-}
+type CalendarEvent =
+  | { type: "task"; task: Task; kind: "start" | "due" | "completed"; label: string }
+  | { type: "countdown"; countdown: Countdown; kind: "countdown"; label: string };
 
 const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
@@ -37,36 +36,50 @@ function monthDays(month: Date) {
   );
 }
 
-function eventsForDate(tasks: Task[], day: string): CalendarEvent[] {
-  return tasks.flatMap((task) => {
+function eventsForDate(tasks: Task[], countdowns: Countdown[], day: string): CalendarEvent[] {
+  const taskEvents = tasks.flatMap((task) => {
     const events: CalendarEvent[] = [];
-    if (task.startDate === day) events.push({ task, kind: "start", label: "开始" });
-    if (task.dueDate === day) events.push({ task, kind: "due", label: "截止" });
+    if (task.startDate === day) events.push({ type: "task", task, kind: "start", label: "开始" });
+    if (task.dueDate === day) events.push({ type: "task", task, kind: "due", label: "截止" });
     if (completedDateKey(task.completedAt) === day) {
       const completedTime = new Intl.DateTimeFormat("zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
         hour12: false,
       }).format(new Date(task.completedAt!));
-      events.push({ task, kind: "completed", label: `完成 ${completedTime}` });
+      events.push({ type: "task", task, kind: "completed", label: `完成 ${completedTime}` });
     }
     return events;
   });
+  const countdownEvents: CalendarEvent[] = countdowns
+    .filter((countdown) => countdown.targetDate === day)
+    .map((countdown) => ({ type: "countdown", countdown, kind: "countdown", label: "关键日期" }));
+  return [...countdownEvents, ...taskEvents];
 }
 
-export default function CalendarView({ tasks, onOpenTask, onNewTask }: CalendarViewProps) {
+export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCountdown, onNewTask }: CalendarViewProps) {
   const now = new Date();
   const [month, setMonth] = useState(() => new Date(now.getFullYear(), now.getMonth(), 1));
   const [selectedDate, setSelectedDate] = useState(dateKey());
   const days = useMemo(() => monthDays(month), [month]);
   const selectedEvents = useMemo(
-    () => eventsForDate(tasks, selectedDate),
-    [tasks, selectedDate],
+    () => eventsForDate(tasks, countdowns, selectedDate),
+    [tasks, countdowns, selectedDate],
   );
 
   const monthPrefix = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
   const monthStarts = tasks.filter((task) => task.startDate?.startsWith(monthPrefix)).length;
   const monthCompleted = tasks.filter((task) => completedDateKey(task.completedAt).startsWith(monthPrefix)).length;
+  const monthCountdowns = countdowns.filter((countdown) => countdown.targetDate.startsWith(monthPrefix)).length;
+
+  function openEvent(event: CalendarEvent) {
+    if (event.type === "task") onOpenTask(event.task);
+    else onOpenCountdown(event.countdown);
+  }
+
+  function eventTitle(event: CalendarEvent) {
+    return event.type === "task" ? event.task.title : event.countdown.title;
+  }
 
   function moveMonth(offset: number) {
     const next = new Date(month.getFullYear(), month.getMonth() + offset, 1);
@@ -89,6 +102,7 @@ export default function CalendarView({ tasks, onOpenTask, onNewTask }: CalendarV
         </div>
         <div className="calendar-stats" aria-label="本月概况">
           <span><Clock3 size={14} />{monthStarts} 项开始</span>
+          <span><Hourglass size={14} />{monthCountdowns} 个关键日期</span>
           <span><CalendarCheck size={14} />{monthCompleted} 项完成</span>
         </div>
         <div className="calendar-controls">
@@ -103,7 +117,7 @@ export default function CalendarView({ tasks, onOpenTask, onNewTask }: CalendarV
           {weekdays.map((weekday) => <div className="weekday" key={weekday}>{weekday}</div>)}
           {days.map((day) => {
             const key = dateKey(day);
-            const events = eventsForDate(tasks, key);
+            const events = eventsForDate(tasks, countdowns, key);
             const isCurrentMonth = day.getMonth() === month.getMonth();
             return (
               <div
@@ -115,9 +129,10 @@ export default function CalendarView({ tasks, onOpenTask, onNewTask }: CalendarV
                 </button>
                 <div className="day-events">
                   {events.slice(0, 3).map((event, index) => (
-                    <button className={`calendar-event event-${event.kind}`} type="button" onClick={() => onOpenTask(event.task)} key={`${event.task.id}-${event.kind}-${index}`} title={`${event.label}：${event.task.title}`}>
+                    <button className={`calendar-event event-${event.kind}`} type="button" onClick={() => openEvent(event)} key={`${event.type === "task" ? event.task.id : event.countdown.id}-${event.kind}-${index}`} title={`${event.label}：${eventTitle(event)}`}>
                       {event.kind === "completed" && <Check size={10} />}
-                      <span>{event.task.title}</span>
+                      {event.kind === "countdown" && <Hourglass size={9} />}
+                      <span>{eventTitle(event)}</span>
                     </button>
                   ))}
                   {events.length > 3 && <span className="more-events">还有 {events.length - 3} 项</span>}
@@ -138,10 +153,11 @@ export default function CalendarView({ tasks, onOpenTask, onNewTask }: CalendarV
         </header>
         <div className="agenda-list">
           {selectedEvents.map((event, index) => (
-            <button className={`agenda-item event-${event.kind}`} type="button" key={`${event.task.id}-${event.kind}-${index}`} onClick={() => onOpenTask(event.task)}>
+            <button className={`agenda-item event-${event.kind}`} type="button" key={`${event.type === "task" ? event.task.id : event.countdown.id}-${event.kind}-${index}`} onClick={() => openEvent(event)}>
               <span className="agenda-kind">{event.label}</span>
-              <strong>{event.task.title}</strong>
-              {event.task.priority === "important" && <Flag size={13} fill="currentColor" />}
+              <strong>{eventTitle(event)}</strong>
+              {event.type === "task" && event.task.priority === "important" && <Flag size={13} fill="currentColor" />}
+              {event.type === "countdown" && <Hourglass size={13} />}
             </button>
           ))}
           {!selectedEvents.length && <p className="agenda-empty">这一天还没有计划轨迹。</p>}

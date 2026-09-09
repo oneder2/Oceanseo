@@ -17,6 +17,7 @@ import {
   Circle,
   Clock3,
   Flag,
+  Hourglass,
   Infinity as InfinityIcon,
   Eye,
   EyeOff,
@@ -38,6 +39,7 @@ import {
   X,
 } from "lucide-react";
 import CalendarView from "./CalendarView";
+import CountdownView from "./CountdownView";
 import DatePicker from "./DatePicker";
 import MealPlanner from "./MealPlanner";
 import ShoppingList from "./ShoppingList";
@@ -45,6 +47,7 @@ import WorkMonitorDashboard from "./WorkMonitorDashboard";
 import { getAiSettings, saveAiSettings } from "./aiSettingsStore";
 import type { AiSettings } from "./aiSettingsStore";
 import { dateKey } from "./dateUtils";
+import { loadCountdowns, saveCountdowns } from "./countdownStore";
 import { useDailyReminders } from "./useDailyReminders";
 import {
   bootstrapTasks,
@@ -69,7 +72,7 @@ import {
   savePurchaseItems,
   updatePurchaseItem,
 } from "./shoppingStore";
-import type { Horizon, MealPlan, PurchaseItemDraft, ReminderSettings, Task, TaskDraft, TaskOrigin, View } from "./types";
+import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings, Task, TaskDraft, TaskOrigin, View } from "./types";
 
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
@@ -191,6 +194,8 @@ export default function App() {
   const [purchaseItems, setPurchaseItems] = useState(loadPurchaseItems);
   const [mealPlan, setMealPlan] = useState(loadMealPlan);
   const [mealCheckedItems, setMealCheckedItems] = useState(loadMealCheckedItems);
+  const [countdowns, setCountdowns] = useState(loadCountdowns);
+  const [selectedCountdownId, setSelectedCountdownId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, reminderSettings);
 
@@ -258,6 +263,10 @@ export default function App() {
   useEffect(() => {
     saveMealCheckedItems(mealCheckedItems);
   }, [mealCheckedItems]);
+
+  useEffect(() => {
+    saveCountdowns(countdowns);
+  }, [countdowns]);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -589,10 +598,17 @@ export default function App() {
     toggleMealShoppingItem(mealShoppingItemKey(mealItem.category, mealItem.name));
   }
 
+  function openCountdown(countdown: Countdown) {
+    setSelectedCountdownId(countdown.id);
+    setView("countdowns");
+  }
+
   const title = view === "today"
     ? "今日计划"
     : view === "calendar"
       ? "计划日历"
+      : view === "countdowns"
+        ? "关键日期"
       : view === "meal-planner"
         ? "AI 一周食谱"
         : view === "shopping-list"
@@ -608,7 +624,9 @@ export default function App() {
         ? `${overdueCount} 项已经逾期，先处理最重要的一件。`
         : "把注意力放在今天到期的事情上。"
       : view === "calendar"
-        ? "让开始、截止与完成在时间里留下轨迹。"
+        ? "让计划与关键日期在时间里留下轨迹。"
+        : view === "countdowns"
+          ? "看见重要日子正在靠近，也记住已经走过多久。"
         : view === "meal-planner"
           ? "从三餐安排到采购清单，把一周吃饭这件事一次想清楚。"
           : view === "shopping-list"
@@ -676,6 +694,11 @@ export default function App() {
               <CalendarRange size={18} />
               <span>计划日历</span>
             </button>
+            <button className={view === "countdowns" ? "active" : ""} onClick={() => { setView("countdowns"); setMobileMenuOpen(false); }}>
+              <Hourglass size={18} />
+              <span>日期倒计时</span>
+              {countdowns.length > 0 && <em>{countdowns.length}</em>}
+            </button>
             <button className={view === "meal-planner" ? "active" : ""} onClick={() => { setView("meal-planner"); setMobileMenuOpen(false); }}>
               <ChefHat size={18} />
               <span>AI 食谱</span>
@@ -726,7 +749,7 @@ export default function App() {
               <p>{subtitle}</p>
             </div>
             <div className="head-actions">
-              {view !== "calendar" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
+              {view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
                 <label className="search-field">
                   <Search size={17} />
                   <span className="sr-only">搜索计划</span>
@@ -738,7 +761,7 @@ export default function App() {
                   )}
                 </label>
               )}
-              {view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
+              {view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
                 <button className="primary-button" type="button" onClick={() => openNewTask("short")}>
                   <Plus size={18} strokeWidth={2.5} />
                   <span>新计划</span>
@@ -775,7 +798,21 @@ export default function App() {
               onToast={setToast}
             />
           ) : view === "calendar" ? (
-            <CalendarView tasks={tasks} onOpenTask={openTask} onNewTask={(startDate) => openNewTask("short", startDate)} />
+            <CalendarView
+              tasks={tasks}
+              countdowns={countdowns}
+              onOpenTask={openTask}
+              onOpenCountdown={openCountdown}
+              onNewTask={(startDate) => openNewTask("short", startDate)}
+            />
+          ) : view === "countdowns" ? (
+            <CountdownView
+              countdowns={countdowns}
+              selectedCountdownId={selectedCountdownId}
+              onChange={setCountdowns}
+              onSelectionHandled={() => setSelectedCountdownId(null)}
+              onToast={setToast}
+            />
           ) : (
             <>
               <section className="timeline-strip" aria-label="今日完成进度">
@@ -841,6 +878,7 @@ export default function App() {
                           title={task.notes ? "打开事项笔记" : "添加事项笔记"}
                         >
                           <NotebookPen size={15} />
+                          <span>{task.notes ? "笔记" : "记笔记"}</span>
                         </button>
                       </article>
                     ))}
