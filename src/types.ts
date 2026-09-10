@@ -1,6 +1,6 @@
 export type Horizon = "short" | "mid" | "long";
 export type Priority = "normal" | "important";
-export type View = "today" | "all" | "calendar" | "countdowns" | "meal-planner" | "shopping-list" | "work-monitor" | "completed";
+export type View = "overview" | "today" | "all" | "calendar" | "countdowns" | "meal-planner" | "shopping-list" | "work-monitor" | "completed";
 
 export interface TaskOrigin {
   kind: "local" | "migration" | "deep_link";
@@ -35,6 +35,7 @@ export interface TaskDraft {
 export interface ReminderSettings {
   enabled: boolean;
   times: [string, string];
+  countdownAdvanceDays: number;
 }
 
 export interface Countdown {

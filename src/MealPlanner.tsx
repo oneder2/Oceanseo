@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   ArrowRight,
+  CalendarRange,
   Check,
   ChefHat,
   ChevronDown,
@@ -14,9 +15,10 @@ import {
   Utensils,
 } from "lucide-react";
 import { mealShoppingItemKey } from "./shoppingStore";
+import { APP_STATE_KEYS, persistAppState } from "./appDataStore";
 import type { MealPlan, MealPreferences } from "./types";
 
-const PREFERENCES_STORAGE_KEY = "tideplan.meal-preferences.v1";
+const PREFERENCES_STORAGE_KEY = APP_STATE_KEYS.mealPreferences;
 
 const defaultPreferences: MealPreferences = {
   people: 2,
@@ -59,9 +61,11 @@ interface MealPlannerProps {
   onOpenAiSettings: () => void;
   onOpenShoppingList: () => void;
   onToast: (message: string) => void;
+  planningContext: string;
+  planningItemCount: number;
 }
 
-export default function MealPlanner({ aiConfigured, plan, checkedItems, onPlanGenerated, onToggleShoppingItem, onOpenAiSettings, onOpenShoppingList, onToast }: MealPlannerProps) {
+export default function MealPlanner({ aiConfigured, plan, checkedItems, onPlanGenerated, onToggleShoppingItem, onOpenAiSettings, onOpenShoppingList, onToast, planningContext, planningItemCount }: MealPlannerProps) {
   const [preferences, setPreferences] = useState<MealPreferences>(loadPreferences);
   const [selectedDay, setSelectedDay] = useState(0);
   const [formOpen, setFormOpen] = useState(() => !plan);
@@ -69,7 +73,7 @@ export default function MealPlanner({ aiConfigured, plan, checkedItems, onPlanGe
   const [error, setError] = useState("");
 
   useEffect(() => {
-    localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(preferences));
+    void persistAppState(PREFERENCES_STORAGE_KEY, preferences).catch(() => undefined);
   }, [preferences]);
 
   const shoppingCount = useMemo(
@@ -103,7 +107,7 @@ export default function MealPlanner({ aiConfigured, plan, checkedItems, onPlanGe
     setLoading(true);
     try {
       const result = await invoke<MealPlan>("generate_meal_plan", {
-        preferences,
+        preferences: { ...preferences, planningContext },
       });
       onPlanGenerated(result);
       setSelectedDay(0);
@@ -139,6 +143,7 @@ export default function MealPlanner({ aiConfigured, plan, checkedItems, onPlanGe
           <div className="meal-setup-body">
             <div className={`meal-ai-config ${aiConfigured ? "is-ready" : ""}`}>
               <span><KeyRound size={14} />{aiConfigured ? "AI 服务已配置" : "AI 服务尚未配置"}</span>
+              {planningItemCount > 0 && <span className="meal-context"><CalendarRange size={14} />已参考未来一周 {planningItemCount} 个安排</span>}
               <button className="secondary-button" type="button" onClick={onOpenAiSettings}>打开偏好设置</button>
             </div>
 

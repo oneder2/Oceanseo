@@ -21,6 +21,8 @@ struct MealPreferences {
     allergies: String,
     budget: u32,
     health_goal: String,
+    #[serde(default)]
+    planning_context: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -151,15 +153,25 @@ async fn generate_meal_plan(
         return Err("每周预算需要在 1 到 1000000 元之间。".into());
     }
 
+    let planning_context = if preferences.planning_context.trim().is_empty() {
+        "未来一周没有额外日程约束。".to_string()
+    } else {
+        format!(
+            "未来一周日程参考：\n{}",
+            preferences.planning_context.trim()
+        )
+    };
     let user_prompt = format!(
         "请制定适合未来一周的三餐计划，并据此汇总一次性采购清单。\n\
         用餐人数：{} 人\n饮食偏好：{}\n过敏或忌口：{}\n每周预算：{} 元\n营养目标：{}\n\
-        要求：使用中国家庭容易采购的食材；数量按人数估算；三餐尽量不重复；采购清单合并相同食材；只使用简体中文。",
+        {}\n\
+        要求：使用中国家庭容易采购的食材；数量按人数估算；三餐尽量不重复；采购清单合并相同食材；忙碌日期优先安排简单餐食；只使用简体中文。",
         preferences.people,
         preferences.dietary_preference.trim(),
         preferences.allergies.trim(),
         preferences.budget,
         preferences.health_goal.trim(),
+        planning_context,
     );
 
     let request_body = json!({
@@ -249,6 +261,10 @@ pub fn run() {
             tasks::set_task_completed,
             tasks::delete_task,
             tasks::migrate_legacy_tasks,
+            tasks::bootstrap_app_state,
+            tasks::set_app_state,
+            tasks::export_data_backup,
+            tasks::restore_data_backup,
             deep_links::take_pending_deep_links,
             work_monitor::get_work_dashboard,
             work_monitor::save_work_monitor_config,

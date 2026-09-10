@@ -11,6 +11,8 @@
     "core:window:allow-set-always-on-top",
     "autostart:default",
     "dialog:allow-save",
+    "dialog:allow-open",
+    "fs:allow-read-text-file",
     "fs:allow-write-text-file",
     "notification:default"
   ]

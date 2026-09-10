@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
@@ -16,7 +17,10 @@ import {
   ChevronRight,
   Circle,
   Clock3,
+  DatabaseBackup,
+  Download,
   Flag,
+  Gauge,
   Hourglass,
   Infinity as InfinityIcon,
   Eye,
@@ -34,20 +38,26 @@ import {
   Save,
   Settings,
   ShoppingBasket,
+  ShieldCheck,
   Sparkles,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import CalendarView from "./CalendarView";
 import CountdownView from "./CountdownView";
 import DatePicker from "./DatePicker";
+import HomeDashboard from "./HomeDashboard";
 import MealPlanner from "./MealPlanner";
 import ShoppingList from "./ShoppingList";
 import WorkMonitorDashboard from "./WorkMonitorDashboard";
 import { getAiSettings, saveAiSettings } from "./aiSettingsStore";
 import type { AiSettings } from "./aiSettingsStore";
+import { APP_STATE_KEYS, bootstrapAppData, persistAppState } from "./appDataStore";
+import { exportDataBackup, restoreDataBackup, selectDataBackup } from "./backupStore";
+import type { DataBackup } from "./backupStore";
 import { dateKey } from "./dateUtils";
-import { loadCountdowns, saveCountdowns } from "./countdownStore";
+import { countdownDays, loadCountdowns } from "./countdownStore";
 import { useDailyReminders } from "./useDailyReminders";
 import {
   bootstrapTasks,
@@ -59,7 +69,8 @@ import {
   updateTask,
 } from "./taskStore";
 import type { DeepLinkMessage } from "./taskStore";
-import { runScheduledWorkScan } from "./workMonitorStore";
+import { getWorkDashboard, runScheduledWorkScan } from "./workMonitorStore";
+import type { WorkDashboard } from "./workMonitorStore";
 import {
   createMealPurchaseItems,
   createPurchaseItem,
@@ -67,9 +78,6 @@ import {
   loadMealPlan,
   loadPurchaseItems,
   mealShoppingItemKey,
-  saveMealCheckedItems,
-  saveMealPlan,
-  savePurchaseItems,
   updatePurchaseItem,
 } from "./shoppingStore";
 import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings, Task, TaskDraft, TaskOrigin, View } from "./types";
@@ -77,6 +85,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
+const FALLBACK_APP_VERSION = "0.5.0";
 
 const horizons: Array<{
   id: Horizon;
@@ -101,14 +110,17 @@ const emptyDraft: TaskDraft = {
 function loadReminderSettings(): ReminderSettings {
   try {
     const value = localStorage.getItem(REMINDER_SETTINGS_KEY);
-    if (!value) return { enabled: true, times: ["09:00", "19:00"] };
+    if (!value) return { enabled: true, times: ["09:00", "19:00"], countdownAdvanceDays: 3 };
     const parsed = JSON.parse(value) as Partial<ReminderSettings>;
     const times = Array.isArray(parsed.times) && parsed.times.length === 2
       ? [String(parsed.times[0]), String(parsed.times[1])] as [string, string]
       : ["09:00", "19:00"] as [string, string];
-    return { enabled: parsed.enabled !== false, times };
+    const countdownAdvanceDays = Number.isInteger(parsed.countdownAdvanceDays)
+      ? Math.min(30, Math.max(0, Number(parsed.countdownAdvanceDays)))
+      : 3;
+    return { enabled: parsed.enabled !== false, times, countdownAdvanceDays };
   } catch {
-    return { enabled: true, times: ["09:00", "19:00"] };
+    return { enabled: true, times: ["09:00", "19:00"], countdownAdvanceDays: 3 };
   }
 }
 
@@ -166,7 +178,7 @@ function aiSettingsErrorMessage(error: unknown) {
 
 export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [view, setView] = useState<View>("all");
+  const [view, setView] = useState<View>("overview");
   const [search, setSearch] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -196,8 +208,39 @@ export default function App() {
   const [mealCheckedItems, setMealCheckedItems] = useState(loadMealCheckedItems);
   const [countdowns, setCountdowns] = useState(loadCountdowns);
   const [selectedCountdownId, setSelectedCountdownId] = useState<string | null>(null);
+  const [appDataReady, setAppDataReady] = useState(false);
+  const [workOverview, setWorkOverview] = useState<WorkDashboard | null>(null);
+  const [appVersion, setAppVersion] = useState(FALLBACK_APP_VERSION);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [pendingBackup, setPendingBackup] = useState<DataBackup | null>(null);
+  const [backupError, setBackupError] = useState("");
   const [toast, setToast] = useState("");
-  const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, reminderSettings);
+  const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, countdowns, reminderSettings);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    void getVersion().then(setAppVersion).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void bootstrapAppData()
+      .then(() => {
+        if (!active) return;
+        setReminderSettings(loadReminderSettings());
+        setPurchaseItems(loadPurchaseItems());
+        setMealPlan(loadMealPlan());
+        setMealCheckedItems(loadMealCheckedItems());
+        setCountdowns(loadCountdowns());
+      })
+      .catch(() => {
+        if (active) setToast("生活数据暂时使用本地兼容存储");
+      })
+      .finally(() => {
+        if (active) setAppDataReady(true);
+      });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -249,24 +292,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(REMINDER_SETTINGS_KEY, JSON.stringify(reminderSettings));
-  }, [reminderSettings]);
+    if (!appDataReady) return;
+    void persistAppState(APP_STATE_KEYS.reminders, reminderSettings)
+      .catch(() => setToast("提醒设置未写入数据库，已保留本地副本"));
+  }, [appDataReady, reminderSettings]);
 
   useEffect(() => {
-    savePurchaseItems(purchaseItems);
-  }, [purchaseItems]);
+    if (!appDataReady) return;
+    void persistAppState(APP_STATE_KEYS.purchases, purchaseItems.filter((item) => item.source === "manual"))
+      .catch(() => setToast("采购清单未写入数据库，已保留本地副本"));
+  }, [appDataReady, purchaseItems]);
 
   useEffect(() => {
-    saveMealPlan(mealPlan);
-  }, [mealPlan]);
+    if (!appDataReady) return;
+    void persistAppState(APP_STATE_KEYS.mealPlan, mealPlan)
+      .catch(() => setToast("食谱未写入数据库，已保留本地副本"));
+  }, [appDataReady, mealPlan]);
 
   useEffect(() => {
-    saveMealCheckedItems(mealCheckedItems);
-  }, [mealCheckedItems]);
+    if (!appDataReady) return;
+    void persistAppState(APP_STATE_KEYS.mealChecked, mealCheckedItems)
+      .catch(() => setToast("食谱勾选状态未写入数据库，已保留本地副本"));
+  }, [appDataReady, mealCheckedItems]);
 
   useEffect(() => {
-    saveCountdowns(countdowns);
-  }, [countdowns]);
+    if (!appDataReady) return;
+    void persistAppState(APP_STATE_KEYS.countdowns, countdowns)
+      .catch(() => setToast("关键日期未写入数据库，已保留本地副本"));
+  }, [appDataReady, countdowns]);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -319,10 +372,18 @@ export default function App() {
   useEffect(() => {
     void runScheduledWorkScan()
       .then((result) => {
-        if (result) setToast("每周项目检查已完成");
+        if (result) {
+          setWorkOverview(result);
+          setToast("每周项目检查已完成");
+        }
       })
       .catch(() => setToast("自动项目检查未完成，请在工作观察中查看配置"));
   }, []);
+
+  useEffect(() => {
+    if (view !== "overview") return;
+    void getWorkDashboard().then(setWorkOverview).catch(() => setWorkOverview(null));
+  }, [view]);
 
   const activeTasks = tasks.filter((task) => !task.completedAt);
   const completedTasks = tasks.filter((task) => task.completedAt);
@@ -336,6 +397,33 @@ export default function App() {
     () => [...purchaseItems, ...aiPurchaseItems],
     [aiPurchaseItems, purchaseItems],
   );
+  const mealPlanningContext = useMemo(() => {
+    const today = dateKey();
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + 6);
+    const end = dateKey(endDate);
+    const taskLines = activeTasks.flatMap((task) => {
+      const hasDate = Boolean(task.startDate || task.dueDate);
+      const overlapsWeek = task.startDate && task.dueDate
+        ? task.startDate <= end && task.dueDate >= today
+        : task.startDate
+          ? task.startDate >= today && task.startDate <= end
+          : Boolean(task.dueDate && task.dueDate >= today && task.dueDate <= end);
+      if (!hasDate || !overlapsWeek) return [];
+      const schedule = task.startDate && task.dueDate
+        ? `${task.startDate} 至 ${task.dueDate}`
+        : task.startDate
+          ? `${task.startDate} 开始`
+          : `${task.dueDate} 截止`;
+      return [`${schedule}：${task.title}${task.priority === "important" ? "（重要）" : ""}`];
+    });
+    const countdownLines = countdowns.flatMap((countdown) => {
+      const days = countdownDays(countdown.targetDate, today);
+      return days >= 0 && days <= 6 ? [`${countdown.targetDate}：关键日期“${countdown.title}”`] : [];
+    });
+    const lines = [...taskLines, ...countdownLines].slice(0, 12);
+    return { text: lines.join("\n"), count: lines.length };
+  }, [activeTasks, countdowns]);
   const notebookTask = tasks.find((task) => task.id === notebookTaskId) ?? null;
 
   const visibleTasks = useMemo(() => {
@@ -554,6 +642,48 @@ export default function App() {
     setToast(sent ? "测试通知已发送" : "无法发送通知，请检查系统权限");
   }
 
+  async function handleExportBackup() {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setBackupError("");
+    try {
+      const saved = await exportDataBackup();
+      if (saved) setToast("数据备份已保存");
+    } catch {
+      setBackupError("备份未导出，请重新选择保存位置");
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function handleSelectBackup() {
+    if (backupBusy) return;
+    setBackupBusy(true);
+    setBackupError("");
+    try {
+      const selected = await selectDataBackup();
+      if (selected) setPendingBackup(selected);
+    } catch {
+      setBackupError("无法读取该文件，请选择由潮汐计划生成的 JSON 备份");
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function confirmRestoreBackup() {
+    if (!pendingBackup || backupBusy) return;
+    setBackupBusy(true);
+    setBackupError("");
+    try {
+      await restoreDataBackup(pendingBackup);
+      setToast("数据已恢复，正在重新载入");
+      window.setTimeout(() => window.location.reload(), 500);
+    } catch {
+      setBackupError("备份恢复失败，当前数据没有改变");
+      setBackupBusy(false);
+    }
+  }
+
   function setReminderTime(index: 0 | 1, value: string) {
     const times: [string, string] = [...reminderSettings.times];
     times[index] = value;
@@ -603,7 +733,9 @@ export default function App() {
     setView("countdowns");
   }
 
-  const title = view === "today"
+  const title = view === "overview"
+    ? "今日总览"
+    : view === "today"
     ? "今日计划"
     : view === "calendar"
       ? "计划日历"
@@ -619,7 +751,9 @@ export default function App() {
         ? "完成记录"
         : "所有计划";
   const subtitle =
-    view === "today"
+    view === "overview"
+      ? "把计划、时间、生活与工作放进同一条节奏里。"
+      : view === "today"
       ? overdueCount
         ? `${overdueCount} 项已经逾期，先处理最重要的一件。`
         : "把注意力放在今天到期的事情上。"
@@ -680,6 +814,10 @@ export default function App() {
           </div>
 
           <nav className="main-nav" aria-label="计划视图">
+            <button className={view === "overview" ? "active" : ""} onClick={() => { setView("overview"); setMobileMenuOpen(false); }}>
+              <Gauge size={18} />
+              <span>总览</span>
+            </button>
             <button className={view === "today" ? "active" : ""} onClick={() => { setView("today"); setMobileMenuOpen(false); }}>
               <Sparkles size={18} />
               <span>今天</span>
@@ -749,7 +887,7 @@ export default function App() {
               <p>{subtitle}</p>
             </div>
             <div className="head-actions">
-              {view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
+              {view !== "overview" && view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
                 <label className="search-field">
                   <Search size={17} />
                   <span className="sr-only">搜索计划</span>
@@ -761,7 +899,7 @@ export default function App() {
                   )}
                 </label>
               )}
-              {view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
+              {view !== "overview" && view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
                 <button className="primary-button" type="button" onClick={() => openNewTask("short")}>
                   <Plus size={18} strokeWidth={2.5} />
                   <span>新计划</span>
@@ -770,7 +908,20 @@ export default function App() {
             </div>
           </section>
 
-          {view === "meal-planner" ? (
+          {view === "overview" ? (
+            <HomeDashboard
+              tasks={tasks}
+              countdowns={countdowns}
+              purchaseItems={allPurchaseItems}
+              mealPlan={mealPlan}
+              workDashboard={workOverview}
+              reminderSettings={reminderSettings}
+              onOpenTask={openTask}
+              onOpenCountdown={openCountdown}
+              onNavigate={setView}
+              onNewTask={() => openNewTask("short")}
+            />
+          ) : view === "meal-planner" ? (
             <MealPlanner
               aiConfigured={aiSettings?.apiKeyConfigured ?? false}
               plan={mealPlan}
@@ -780,6 +931,8 @@ export default function App() {
               onOpenAiSettings={() => setSettingsOpen(true)}
               onOpenShoppingList={() => setView("shopping-list")}
               onToast={setToast}
+              planningContext={mealPlanningContext.text}
+              planningItemCount={mealPlanningContext.count}
             />
           ) : view === "shopping-list" ? (
             <ShoppingList
@@ -1071,6 +1224,28 @@ export default function App() {
                 <Bell size={14} />测试通知
               </button>
             </div>
+            <div className={`countdown-reminder-setting ${!reminderSettings.enabled ? "is-disabled" : ""}`}>
+              <Hourglass size={15} />
+              <label>
+                <span>关键日期提前提醒</span>
+                <span className="advance-days-input">
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    value={reminderSettings.countdownAdvanceDays}
+                    onChange={(event) => setReminderSettings({
+                      ...reminderSettings,
+                      countdownAdvanceDays: Math.min(30, Math.max(0, Number(event.target.value) || 0)),
+                    })}
+                    disabled={!reminderSettings.enabled}
+                    aria-label="关键日期提前提醒天数"
+                  />
+                  <em>天</em>
+                </span>
+              </label>
+              <p>每日提醒会同时列出临近的关键日期，设为 0 时只提醒当天。</p>
+            </div>
             <section className="ai-settings-section" aria-label="AI 服务配置">
               <header>
                 <span className="setting-icon ai-setting-icon"><KeyRound size={18} /></span>
@@ -1120,10 +1295,36 @@ export default function App() {
                 </footer>
               </form>
             </section>
+            <section className="data-backup-section" aria-label="数据备份与恢复">
+              <header>
+                <span className="setting-icon backup-setting-icon"><DatabaseBackup size={18} /></span>
+                <div>
+                  <strong>数据备份与恢复</strong>
+                  <p>导出计划、关键日期、食谱、采购与提醒设置，不包含 API 密钥。</p>
+                </div>
+                <span className="sqlite-state"><ShieldCheck size={12} />SQLite</span>
+              </header>
+              <div className="backup-actions">
+                <button className="secondary-button" type="button" onClick={() => void handleExportBackup()} disabled={backupBusy || !isTauri()}><Download size={15} />导出备份</button>
+                <button className="secondary-button" type="button" onClick={() => void handleSelectBackup()} disabled={backupBusy || !isTauri()}><Upload size={15} />选择备份</button>
+                <span>{isTauri() ? "恢复前会显示内容摘要，并由你再次确认。" : "请在桌面应用中使用备份功能。"}</span>
+              </div>
+              {pendingBackup && (
+                <div className="backup-confirm" role="alert">
+                  <div>
+                    <strong>准备恢复 {pendingBackup.tasks.length} 项计划</strong>
+                    <span>备份时间：{new Date(pendingBackup.createdAt).toLocaleString("zh-CN")}</span>
+                  </div>
+                  <button type="button" onClick={() => setPendingBackup(null)} disabled={backupBusy}>取消</button>
+                  <button className="restore-button" type="button" onClick={() => void confirmRestoreBackup()} disabled={backupBusy}>确认覆盖</button>
+                </div>
+              )}
+              {backupError && <p className="backup-error" role="alert">{backupError}</p>}
+            </section>
             <div className="setting-note">
               <span className="brand-mark"><Check size={12} strokeWidth={3} /></span>
-              <p>所有计划只保存在这台电脑上。</p>
-              <small>版本 0.3.1</small>
+              <p>个人数据保存在本机 SQLite 数据库中。</p>
+              <small>版本 {appVersion}</small>
             </div>
           </section>
         </div>

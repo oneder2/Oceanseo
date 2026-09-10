@@ -3,6 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -11,6 +12,16 @@ use uuid::Uuid;
 
 pub const TASK_SCHEMA_VERSION: &str = "1.0.0";
 const LEGACY_MIGRATION_KEY: &str = "tideplan.tasks.v1";
+const BACKUP_SCHEMA_VERSION: &str = "1.0.0";
+const APP_STATE_KEYS: [&str; 6] = [
+    "tideplan.reminders.v1",
+    "tideplan.purchase-list.v1",
+    "tideplan.meal-plan.v1",
+    "tideplan.shopping-checked.v1",
+    "tideplan.countdowns.v1",
+    "tideplan.meal-preferences.v1",
+];
+const MAX_APP_STATE_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +72,15 @@ pub enum LegacyMigrationResult {
     AlreadyMigrated {
         imported_count: usize,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DataBackup {
+    pub schema_version: String,
+    pub created_at: String,
+    pub tasks: Vec<TaskRecord>,
+    pub app_state: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +197,22 @@ impl TaskStore {
 
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                     VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+                CREATE TABLE IF NOT EXISTS app_state (
+                    key TEXT PRIMARY KEY NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS app_state_bootstrap (
+                    singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+                    completed_at TEXT NOT NULL
+                );
+
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                    VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+                INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                    VALUES (3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
                 "#,
             )
             .map_err(|_| "database_migration_failed".to_string())
@@ -423,6 +459,202 @@ impl TaskStore {
             backup_path: backup_path.map(|path| path.to_string_lossy().to_string()),
         })
     }
+
+    pub fn bootstrap_app_state(
+        &self,
+        legacy: HashMap<String, serde_json::Value>,
+    ) -> Result<HashMap<String, serde_json::Value>, String> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "app_state_transaction_failed".to_string())?;
+
+        let migration_completed = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM app_state_bootstrap WHERE singleton = 1)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|_| "app_state_migration_read_failed".to_string())?;
+
+        if !migration_completed {
+            for (key, value) in legacy {
+                validate_app_state(&key, &value)?;
+                transaction
+                    .execute(
+                        r#"
+                        INSERT OR IGNORE INTO app_state(key, value_json, updated_at)
+                        VALUES (?1, ?2, ?3)
+                        "#,
+                        params![key, serialize_app_state(&value)?, now_timestamp()],
+                    )
+                    .map_err(|_| "app_state_migration_failed".to_string())?;
+            }
+            transaction
+                .execute(
+                    "INSERT INTO app_state_bootstrap(singleton, completed_at) VALUES (1, ?1)",
+                    params![now_timestamp()],
+                )
+                .map_err(|_| "app_state_migration_record_failed".to_string())?;
+        }
+
+        let state = read_app_state(&transaction)?;
+        transaction
+            .commit()
+            .map_err(|_| "app_state_commit_failed".to_string())?;
+        Ok(state)
+    }
+
+    pub fn set_app_state(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
+        validate_app_state(key, &value)?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        connection
+            .execute(
+                r#"
+                INSERT INTO app_state(key, value_json, updated_at)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at
+                "#,
+                params![key, serialize_app_state(&value)?, now_timestamp()],
+            )
+            .map_err(|_| "app_state_write_failed".to_string())?;
+        Ok(())
+    }
+
+    pub fn export_backup(&self) -> Result<DataBackup, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let tasks = list_tasks_from_connection(&connection)?;
+        let app_state = read_app_state(&connection)?;
+        Ok(DataBackup {
+            schema_version: BACKUP_SCHEMA_VERSION.to_string(),
+            created_at: now_timestamp(),
+            tasks,
+            app_state,
+        })
+    }
+
+    pub fn restore_backup(&self, backup: DataBackup) -> Result<(), String> {
+        validate_backup(&backup)?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "backup_restore_transaction_failed".to_string())?;
+        transaction
+            .execute("DELETE FROM tasks", [])
+            .map_err(|_| "backup_restore_failed".to_string())?;
+        transaction
+            .execute("DELETE FROM app_state", [])
+            .map_err(|_| "backup_restore_failed".to_string())?;
+
+        for task in &backup.tasks {
+            insert_task(&transaction, task)
+                .map_err(|_| "backup_task_restore_failed".to_string())?;
+        }
+        for (key, value) in &backup.app_state {
+            transaction
+                .execute(
+                    "INSERT INTO app_state(key, value_json, updated_at) VALUES (?1, ?2, ?3)",
+                    params![key, serialize_app_state(value)?, now_timestamp()],
+                )
+                .map_err(|_| "backup_state_restore_failed".to_string())?;
+        }
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO app_state_bootstrap(singleton, completed_at) VALUES (1, ?1)",
+                params![now_timestamp()],
+            )
+            .map_err(|_| "backup_state_restore_failed".to_string())?;
+        transaction
+            .commit()
+            .map_err(|_| "backup_restore_commit_failed".to_string())
+    }
+}
+
+fn list_tasks_from_connection(connection: &Connection) -> Result<Vec<TaskRecord>, String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT schema_version, id, title, notes, horizon, priority,
+                   start_date, due_date, created_at, updated_at, completed_at,
+                   origin_kind, origin_label, origin_reference
+            FROM tasks
+            ORDER BY created_at ASC, id ASC
+            "#,
+        )
+        .map_err(|_| "task_list_failed".to_string())?;
+    let rows = statement
+        .query_map([], task_from_row)
+        .map_err(|_| "task_list_failed".to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "task_list_failed".to_string())
+}
+
+fn validate_app_state(key: &str, value: &serde_json::Value) -> Result<(), String> {
+    if !APP_STATE_KEYS.contains(&key) {
+        return Err("app_state_key_invalid".to_string());
+    }
+    if serialize_app_state(value)?.len() > MAX_APP_STATE_BYTES {
+        return Err("app_state_value_too_large".to_string());
+    }
+    Ok(())
+}
+
+fn serialize_app_state(value: &serde_json::Value) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|_| "app_state_value_invalid".to_string())
+}
+
+fn read_app_state(connection: &Connection) -> Result<HashMap<String, serde_json::Value>, String> {
+    let mut statement = connection
+        .prepare("SELECT key, value_json FROM app_state ORDER BY key")
+        .map_err(|_| "app_state_read_failed".to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|_| "app_state_read_failed".to_string())?;
+    let mut state = HashMap::new();
+    for row in rows {
+        let (key, raw_value) = row.map_err(|_| "app_state_read_failed".to_string())?;
+        let value =
+            serde_json::from_str(&raw_value).map_err(|_| "app_state_value_corrupt".to_string())?;
+        state.insert(key, value);
+    }
+    Ok(state)
+}
+
+fn validate_backup(backup: &DataBackup) -> Result<(), String> {
+    if backup.schema_version != BACKUP_SCHEMA_VERSION {
+        return Err("backup_schema_unsupported".to_string());
+    }
+    validate_timestamp(&backup.created_at).map_err(|_| "backup_timestamp_invalid".to_string())?;
+    if backup.tasks.len() > 10_000 {
+        return Err("backup_task_limit".to_string());
+    }
+    let mut ids = HashSet::new();
+    for task in &backup.tasks {
+        validate_task(task).map_err(|code| format!("backup_task_invalid:{code}"))?;
+        if !ids.insert(task.id.as_str()) {
+            return Err("backup_task_duplicate".to_string());
+        }
+    }
+    for (key, value) in &backup.app_state {
+        validate_app_state(key, value)?;
+    }
+    Ok(())
 }
 
 fn parse_legacy_payload(payload: &str) -> Result<Vec<TaskRecord>, String> {
@@ -721,6 +953,36 @@ pub fn migrate_legacy_tasks(
     store.migrate_legacy(raw_payload.as_deref())
 }
 
+#[tauri::command]
+pub fn bootstrap_app_state(
+    legacy: HashMap<String, serde_json::Value>,
+    store: tauri::State<'_, TaskStore>,
+) -> Result<HashMap<String, serde_json::Value>, String> {
+    store.bootstrap_app_state(legacy)
+}
+
+#[tauri::command]
+pub fn set_app_state(
+    key: String,
+    value: serde_json::Value,
+    store: tauri::State<'_, TaskStore>,
+) -> Result<(), String> {
+    store.set_app_state(&key, value)
+}
+
+#[tauri::command]
+pub fn export_data_backup(store: tauri::State<'_, TaskStore>) -> Result<DataBackup, String> {
+    store.export_backup()
+}
+
+#[tauri::command]
+pub fn restore_data_backup(
+    backup: DataBackup,
+    store: tauri::State<'_, TaskStore>,
+) -> Result<(), String> {
+    store.restore_backup(backup)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,5 +1186,108 @@ mod tests {
             1
         );
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn app_state_migrates_once_and_rejects_unknown_keys() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let mut legacy = HashMap::new();
+        legacy.insert(
+            "tideplan.countdowns.v1".to_string(),
+            serde_json::json!([{"id": "first"}]),
+        );
+
+        let migrated = store.bootstrap_app_state(legacy.clone()).unwrap();
+        assert_eq!(
+            migrated.get("tideplan.countdowns.v1"),
+            legacy.get("tideplan.countdowns.v1")
+        );
+
+        let mut later_legacy = HashMap::new();
+        later_legacy.insert(
+            "tideplan.countdowns.v1".to_string(),
+            serde_json::json!([{"id": "should-not-overwrite"}]),
+        );
+        let unchanged = store.bootstrap_app_state(later_legacy).unwrap();
+        assert_eq!(
+            unchanged.get("tideplan.countdowns.v1"),
+            legacy.get("tideplan.countdowns.v1")
+        );
+        assert_eq!(
+            store.set_app_state("unknown", serde_json::json!({})),
+            Err("app_state_key_invalid".to_string())
+        );
+    }
+
+    #[test]
+    fn backup_restore_is_atomic_and_preserves_app_state() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let original = store
+            .create(mutation("Before backup", Some("2026-09-20")))
+            .unwrap();
+        store
+            .set_app_state(
+                "tideplan.reminders.v1",
+                serde_json::json!({"enabled": true, "times": ["09:00", "19:00"]}),
+            )
+            .unwrap();
+        let backup = store.export_backup().unwrap();
+
+        store.delete(&original.id).unwrap();
+        store
+            .set_app_state(
+                "tideplan.reminders.v1",
+                serde_json::json!({"enabled": false}),
+            )
+            .unwrap();
+        store.restore_backup(backup).unwrap();
+
+        assert_eq!(store.get(&original.id).unwrap().title, "Before backup");
+        assert_eq!(
+            store
+                .export_backup()
+                .unwrap()
+                .app_state
+                .get("tideplan.reminders.v1"),
+            Some(&serde_json::json!({"enabled": true, "times": ["09:00", "19:00"]}))
+        );
+
+        let invalid = DataBackup {
+            schema_version: "2.0.0".to_string(),
+            created_at: now_timestamp(),
+            tasks: Vec::new(),
+            app_state: HashMap::new(),
+        };
+        assert_eq!(
+            store.restore_backup(invalid),
+            Err("backup_schema_unsupported".to_string())
+        );
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn restoring_empty_state_does_not_reimport_legacy_storage() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let mut legacy = HashMap::new();
+        legacy.insert(
+            "tideplan.countdowns.v1".to_string(),
+            serde_json::json!([{"id": "legacy"}]),
+        );
+        store.bootstrap_app_state(legacy.clone()).unwrap();
+
+        store
+            .restore_backup(DataBackup {
+                schema_version: BACKUP_SCHEMA_VERSION.to_string(),
+                created_at: now_timestamp(),
+                tasks: Vec::new(),
+                app_state: HashMap::new(),
+            })
+            .unwrap();
+
+        let state = store.bootstrap_app_state(legacy).unwrap();
+        assert!(state.is_empty());
     }
 }
