@@ -6,12 +6,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import {
   AlarmClock,
-  Archive,
   Bell,
   BellRing,
-  CalendarRange,
   CalendarDays,
-  ChefHat,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -20,24 +17,20 @@ import {
   DatabaseBackup,
   Download,
   Flag,
-  Gauge,
   Hourglass,
   Infinity as InfinityIcon,
   Eye,
   EyeOff,
   KeyRound,
-  LayoutList,
   Menu,
   Minus,
   NotebookPen,
   Pin,
   PinOff,
   Plus,
-  Radar,
   Search,
   Save,
   Settings,
-  ShoppingBasket,
   ShieldCheck,
   Sparkles,
   Trash2,
@@ -45,6 +38,8 @@ import {
   X,
 } from "lucide-react";
 import CalendarView from "./CalendarView";
+import WorkspaceNav from "./WorkspaceNav";
+import BeadStudio from "./BeadStudio";
 import CountdownView from "./CountdownView";
 import DatePicker from "./DatePicker";
 import HomeDashboard from "./HomeDashboard";
@@ -85,7 +80,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.5.0";
+const FALLBACK_APP_VERSION = "0.6.0";
 
 const horizons: Array<{
   id: Horizon;
@@ -733,7 +728,7 @@ export default function App() {
     setView("countdowns");
   }
 
-  const title = view === "overview"
+  const title = view === "bead-studio" ? "拼豆图纸" : view === "overview"
     ? "今日总览"
     : view === "today"
     ? "今日计划"
@@ -751,7 +746,7 @@ export default function App() {
         ? "完成记录"
         : "所有计划";
   const subtitle =
-    view === "overview"
+    view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
       ? "把计划、时间、生活与工作放进同一条节奏里。"
       : view === "today"
       ? overdueCount
@@ -813,49 +808,7 @@ export default function App() {
             <strong>{currentGreeting()}</strong>
           </div>
 
-          <nav className="main-nav" aria-label="计划视图">
-            <button className={view === "overview" ? "active" : ""} onClick={() => { setView("overview"); setMobileMenuOpen(false); }}>
-              <Gauge size={18} />
-              <span>总览</span>
-            </button>
-            <button className={view === "today" ? "active" : ""} onClick={() => { setView("today"); setMobileMenuOpen(false); }}>
-              <Sparkles size={18} />
-              <span>今天</span>
-              {overdueCount > 0 && <em>{overdueCount}</em>}
-            </button>
-            <button className={view === "all" ? "active" : ""} onClick={() => { setView("all"); setMobileMenuOpen(false); }}>
-              <LayoutList size={18} />
-              <span>所有计划</span>
-              <em>{activeTasks.length}</em>
-            </button>
-            <button className={view === "calendar" ? "active" : ""} onClick={() => { setView("calendar"); setMobileMenuOpen(false); }}>
-              <CalendarRange size={18} />
-              <span>计划日历</span>
-            </button>
-            <button className={view === "countdowns" ? "active" : ""} onClick={() => { setView("countdowns"); setMobileMenuOpen(false); }}>
-              <Hourglass size={18} />
-              <span>日期倒计时</span>
-              {countdowns.length > 0 && <em>{countdowns.length}</em>}
-            </button>
-            <button className={view === "meal-planner" ? "active" : ""} onClick={() => { setView("meal-planner"); setMobileMenuOpen(false); }}>
-              <ChefHat size={18} />
-              <span>AI 食谱</span>
-            </button>
-            <button className={view === "shopping-list" ? "active" : ""} onClick={() => { setView("shopping-list"); setMobileMenuOpen(false); }}>
-              <ShoppingBasket size={18} />
-              <span>采购清单</span>
-              {allPurchaseItems.length > 0 && <em>{allPurchaseItems.filter((item) => !item.checked).length}</em>}
-            </button>
-            <button className={view === "work-monitor" ? "active" : ""} onClick={() => { setView("work-monitor"); setMobileMenuOpen(false); }}>
-              <Radar size={18} />
-              <span>工作观察</span>
-            </button>
-            <button className={view === "completed" ? "active" : ""} onClick={() => { setView("completed"); setMobileMenuOpen(false); }}>
-              <Archive size={18} />
-              <span>完成记录</span>
-              <em>{completedTasks.length}</em>
-            </button>
-          </nav>
+          <WorkspaceNav view={view} onNavigate={next => { setView(next); setMobileMenuOpen(false); }} />
 
           <section className="progress-panel" aria-label="计划进度">
             <div className="progress-heading">
@@ -887,7 +840,7 @@ export default function App() {
               <p>{subtitle}</p>
             </div>
             <div className="head-actions">
-              {view !== "overview" && view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
+              {view !== "bead-studio" && view !== "overview" && view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
                 <label className="search-field">
                   <Search size={17} />
                   <span className="sr-only">搜索计划</span>
@@ -899,7 +852,7 @@ export default function App() {
                   )}
                 </label>
               )}
-              {view !== "overview" && view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
+              {view !== "bead-studio" && view !== "overview" && view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
                 <button className="primary-button" type="button" onClick={() => openNewTask("short")}>
                   <Plus size={18} strokeWidth={2.5} />
                   <span>新计划</span>
@@ -908,7 +861,7 @@ export default function App() {
             </div>
           </section>
 
-          {view === "overview" ? (
+          {view === "bead-studio" ? (appDataReady ? <BeadStudio /> : <p role="status">正在读取图纸…</p>) : view === "overview" ? (
             <HomeDashboard
               tasks={tasks}
               countdowns={countdowns}
@@ -1300,7 +1253,7 @@ export default function App() {
                 <span className="setting-icon backup-setting-icon"><DatabaseBackup size={18} /></span>
                 <div>
                   <strong>数据备份与恢复</strong>
-                  <p>导出计划、关键日期、食谱、采购与提醒设置，不包含 API 密钥。</p>
+                  <p>导出计划、关键日期、食谱、采购、拼豆图纸与提醒设置，不包含 API 密钥。</p>
                 </div>
                 <span className="sqlite-state"><ShieldCheck size={12} />SQLite</span>
               </header>

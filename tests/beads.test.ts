@@ -1,0 +1,120 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { convertImage, type ConvertOptions } from "../src/beads/convert";
+import {
+  blankPattern,
+  counts,
+  isPattern,
+  resizePattern,
+  ink,
+} from "../src/beads/model";
+import { dateFromKey, dateKey } from "../src/dateUtils";
+
+test("calendar dates preserve leap years and centuries during year jumps", () => {
+  for (const key of [
+    "0100-01-01",
+    "1900-03-01",
+    "2000-02-29",
+    "2032-02-29",
+    "9999-12-31",
+  ])
+    assert.equal(dateKey(dateFromKey(key)), key);
+  assert.notEqual(dateKey(dateFromKey("1900-02-29")), "1900-02-29");
+});
+
+function raster(
+  w: number,
+  h: number,
+  pixel: (x: number, y: number) => number[],
+) {
+  return new Uint8ClampedArray(
+    Array.from({ length: w * h }, (_, i) =>
+      pixel(i % w, Math.floor(i / w)),
+    ).flat(),
+  );
+}
+const opts: ConvertOptions = {
+  width: 5,
+  height: 5,
+  colors: 8,
+  cleanup: 1,
+  mode: "photo",
+};
+test("pixel mode preserves exact source colors, holes and isolated outline details", () => {
+  const data = raster(5, 5, (x, y) =>
+    x === 2 && y === 2
+      ? [0, 0, 0, 255]
+      : x === 0
+        ? [20, 30, 40, 0]
+        : [253, 12, 19, 255],
+  );
+  const p = convertImage(data, { ...opts, mode: "pixel" });
+  assert.equal(p.cells[0], -1);
+  assert.equal(p.palette[p.cells[12]].hex, "#000000");
+  assert.equal(p.palette[p.cells[1]].hex, "#fd0c13");
+  assert.equal(
+    counts(p).reduce((a, b) => a + b),
+    20,
+  );
+  assert.ok(isPattern(p));
+});
+test("photo conversion is deterministic, capped, and keeps strong small features", () => {
+  const data = raster(32, 32, (x, y) =>
+    x === 16 && y === 16
+      ? [0, 0, 0, 255]
+      : [220 + (x % 30), 200 + (y % 30), 180, 255],
+  );
+  const o = { ...opts, width: 32, height: 32, colors: 6, cleanup: 2 };
+  const a = convertImage(data, o),
+    b = convertImage(data, o);
+  assert.deepEqual(a, b);
+  assert.ok(a.palette.length <= 6);
+  assert.ok(isPattern(a));
+  assert.notEqual(a.cells[16 * 32 + 16], a.cells[16 * 32 + 15]);
+});
+test("transparent images produce zero beads and valid documents in both modes", () => {
+  for (const mode of ["photo", "pixel"] as const) {
+    const p = convertImage(new Uint8ClampedArray(100), { ...opts, mode });
+    assert.ok(isPattern(p));
+    assert.ok(p.cells.every((c) => c === -1));
+  }
+});
+test("pixel mode refuses over 256 colors instead of silently destroying the palette", () => {
+  const data = raster(20, 20, (x, y) => [x, y, 0, 255]);
+  assert.throws(
+    () => convertImage(data, { ...opts, width: 20, height: 20, mode: "pixel" }),
+    /256/,
+  );
+});
+test("resizing crops or pads without stretching unless explicitly requested", () => {
+  const p = { ...blankPattern(2, 2), cells: [0, 1, 2, -1] };
+  assert.deepEqual(
+    resizePattern(p, 3, 3, false).cells,
+    [0, 1, -1, 2, -1, -1, -1, -1, -1],
+  );
+  assert.deepEqual(resizePattern(p, 1, 2, false).cells, [0, 2]);
+  assert.deepEqual(
+    resizePattern(p, 4, 2, true).cells,
+    [0, 0, 1, 1, 2, 2, -1, -1],
+  );
+  assert.throws(() => resizePattern(p, 161, 1, false));
+});
+test("document validation rejects corrupt indices, dimensions and colors", () => {
+  assert.equal(isPattern({ ...blankPattern(), cells: [999] }), false);
+  assert.equal(isPattern({ ...blankPattern(), width: Infinity }), false);
+  assert.equal(
+    isPattern({ ...blankPattern(), palette: [{ hex: "red", name: "red" }] }),
+    false,
+  );
+  assert.equal(ink("#000000"), "#ffffff");
+  assert.equal(ink("#ffffff"), "#172127");
+});
+test("maximum conversion stays within declared bounds", () => {
+  const p = convertImage(
+    raster(160, 160, (x, y) => [x, y, (x * y) % 256, 255]),
+    { ...opts, width: 160, height: 160, colors: 48 },
+  );
+  assert.ok(isPattern(p));
+  assert.ok(p.palette.length <= 48);
+  assert.equal(p.cells.length, 25600);
+});

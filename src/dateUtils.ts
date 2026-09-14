@@ -1,11 +1,12 @@
 export function dateKey(date = new Date()) {
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+  return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 export function dateFromKey(value: string) {
   const [year, month, day] = value.split("-").map(Number);
-  return new Date(year, month - 1, day);
+  const date = new Date(2000, month - 1, day);
+  date.setFullYear(year);
+  return date;
 }
 
 export function completedDateKey(value: string | null) {

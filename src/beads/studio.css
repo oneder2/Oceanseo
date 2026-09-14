@@ -1,0 +1,427 @@
+.workspace-nav > section {
+  display: grid;
+  gap: 2px;
+}
+.workspace-nav h2 {
+  margin: 14px 10px 5px;
+  color: #6e7a74;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+.workspace-nav > section > button {
+  width: 100%;
+  min-height: 36px;
+}
+.sidebar:has(.workspace-nav) .progress-panel {
+  display: none;
+}
+.month-jump {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.month-jump label {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+}
+.month-jump input {
+  width: 63px;
+  padding: 5px 2px;
+  border: 1px solid #bcc9c5;
+  border-radius: 4px;
+  background: #fff;
+  color: #263b46;
+  font-size: 13px;
+}
+.month-jump select {
+  padding: 5px 2px;
+  border: 1px solid #bcc9c5;
+  border-radius: 4px;
+  background: #fff;
+  color: #263b46;
+  font-size: 12px;
+}
+.month-jump button {
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: #466773;
+  cursor: pointer;
+}
+.date-picker-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.date-picker-head .month-jump {
+  gap: 3px;
+}
+.bead-studio {
+  --bead-ink: #263b46;
+  --bead-accent: #367c87;
+  color: var(--bead-ink);
+  min-width: 0;
+}
+.bead-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 0 0 22px;
+}
+.bead-heading > div {
+  min-width: 0;
+}
+.bead-heading > div > span {
+  font: 10px monospace;
+  letter-spacing: 0.16em;
+  color: #367c87;
+}
+.bead-heading input {
+  display: block;
+  width: min(100%, 380px);
+  margin-top: 6px;
+  padding: 4px 0;
+  color: #263b46;
+  border: 0;
+  border-bottom: 1px dashed #a8b7bb;
+  background: transparent;
+  font-size: 21px;
+  font-weight: 650;
+}
+.bead-heading p {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+.bead-heading small {
+  margin-left: 12px;
+  color: #5d7876;
+  font-size: 11px;
+}
+.bead-layout {
+  display: grid;
+  grid-template-columns: 200px minmax(250px, 1fr) 185px;
+  gap: 16px;
+  align-items: start;
+}
+.bead-controls,
+.bead-palette {
+  min-width: 0;
+  font-size: 12px;
+}
+.bead-controls details {
+  border-top: 2px solid #8da8ae;
+  padding: 12px 0;
+}
+.bead-controls summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 650;
+  margin-bottom: 14px;
+}
+.bead-studio label:not(.bead-check) {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.bead-studio label input:not([type="checkbox"]),
+.bead-studio label select {
+  width: 100%;
+  min-width: 0;
+  height: 35px;
+  padding: 5px 8px;
+  border: 1px solid #b8c7cb;
+  border-radius: 5px;
+  background: #fff;
+  color: #263b46;
+  font-size: 13px;
+}
+.bead-studio label input[type="color"] {
+  padding: 3px;
+  cursor: pointer;
+}
+.bead-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.bead-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  margin: 10px 0;
+}
+.bead-check input {
+  accent-color: #367c87;
+}
+.bead-help {
+  color: #647780;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 10px 0 14px;
+}
+.bead-upload,
+.bead-action {
+  width: 100%;
+  min-height: 36px;
+}
+.bead-action {
+  border: 0;
+  border-radius: 5px;
+  background: #367c87;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+.bead-source {
+  margin: 10px 0;
+  background: #edf1f2;
+  text-align: center;
+  border: 1px solid #cbd8dc;
+}
+.bead-source img {
+  width: 100%;
+  height: 125px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+.bead-source figcaption {
+  font: 11px monospace;
+  padding: 5px;
+}
+.bead-controls details > .secondary-button {
+  width: 100%;
+  margin-top: 7px;
+}
+.bead-drawing {
+  min-width: 0;
+}
+.bead-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  padding: 7px;
+  border: 1px solid #c1d0d6;
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  background: #f5f8f9;
+}
+.bead-toolbar button,
+.bead-canvas-footer button {
+  min-width: 30px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #375565;
+  cursor: pointer;
+  font-size: 11px;
+}
+.bead-toolbar button.active {
+  background: #367c87;
+  color: #fff;
+}
+.bead-toolbar-gap {
+  flex: 1;
+}
+.bead-stage {
+  height: clamp(360px, 58vh, 650px);
+  width: 100%;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #b6c9d0;
+  background: #e8eff2;
+}
+.bead-stage canvas {
+  display: block;
+  touch-action: none;
+}
+.bead-stage.tool-pan {
+  cursor: grab;
+}
+.bead-stage.tool-pan:active {
+  cursor: grabbing;
+}
+.bead-stage.tool-paint,
+.bead-stage.tool-erase,
+.bead-stage.tool-pick {
+  cursor: crosshair;
+}
+.bead-canvas-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 8px;
+  background: #f5f8f9;
+  border: 1px solid #c1d0d6;
+  border-top: 0;
+  border-radius: 0 0 7px 7px;
+  font: 11px monospace;
+}
+.bead-canvas-footer > div {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.bead-palette h2 {
+  margin: 0 0 10px;
+  padding: 14px 0;
+  border-top: 2px solid #367c87;
+  font-size: 14px;
+}
+.bead-palette h2 span {
+  float: right;
+  font: 12px monospace;
+}
+.bead-palette-list {
+  display: grid;
+  max-height: 320px;
+  overflow: auto;
+  margin-bottom: 16px;
+}
+.bead-palette-list button {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 48px;
+  padding: 5px;
+  border: 1px solid transparent;
+  border-bottom-color: #dce3e5;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: #263b46;
+}
+.bead-palette-list button.active {
+  border: 1px solid #367c87;
+  background: #eaf3f3;
+  border-radius: 4px;
+}
+.bead-palette-list i {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid #263b4650;
+  box-shadow: inset 0 0 0 6px #ffffff18;
+}
+.bead-palette-list strong {
+  display: block;
+  font: 600 12px monospace;
+}
+.bead-palette-list small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #5b727e;
+}
+.bead-palette-list em {
+  font-size: 11px;
+  font-style: normal;
+}
+.bead-status {
+  padding: 12px;
+  border-left: 3px solid #367c87;
+  background: #eaf3f3;
+  color: #244d56;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.bead-preview-modal {
+  padding: 24px;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+.bead-preview-modal h2 {
+  margin-top: 0;
+  font-size: 20px;
+}
+.bead-preview-modal canvas {
+  width: 100%;
+  height: auto;
+  background: #e8eff2;
+}
+.bead-preview-modal p {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.bead-preview-modal footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+.bead-studio button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.bead-studio :focus-visible,
+.month-jump :focus-visible {
+  outline: 2px solid #367c87;
+  outline-offset: 2px;
+}
+@media (max-width: 1200px) {
+  .bead-layout {
+    grid-template-columns: 180px minmax(240px, 1fr);
+  }
+  .bead-palette {
+    grid-column: 1 / -1;
+  }
+  .bead-palette-list {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 5px;
+    max-height: 200px;
+  }
+  .bead-palette > label {
+    display: inline-grid !important;
+    width: min(220px, 45%);
+    margin-right: 10px;
+    vertical-align: top;
+  }
+}
+@media (max-width: 760px) {
+  .bead-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .bead-palette {
+    grid-column: auto;
+  }
+  .bead-controls {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .bead-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .bead-heading > button {
+    justify-content: center;
+  }
+  .bead-toolbar button span {
+    display: none;
+  }
+  .calendar-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .calendar-stats {
+    flex-wrap: wrap;
+  }
+}

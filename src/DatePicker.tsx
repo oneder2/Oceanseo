@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { dateFromKey, dateKey } from "./dateUtils";
+import MonthJump from "./MonthJump";
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -91,7 +92,10 @@ export default function DatePicker({ label, value, onChange }: DatePickerProps) 
   }, [open, month]);
 
   function moveMonth(offset: number) {
-    setMonth((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
+    setMonth((current) => {
+      const next = new Date(current.getFullYear(), current.getMonth() + offset, 1);
+      return next.getFullYear() >= 100 && next.getFullYear() <= 9999 ? next : current;
+    });
   }
 
   function chooseDate(nextValue: string) {
@@ -127,10 +131,7 @@ export default function DatePicker({ label, value, onChange }: DatePickerProps) 
           style={{ top: position.top, left: position.left, width: position.width }}
         >
           <header className="date-picker-head">
-            <div>
-              <span>{month.getFullYear()}</span>
-              <strong>{month.getMonth() + 1}月</strong>
-            </div>
+            <MonthJump value={month} onChange={setMonth} />
             <div>
               <button type="button" onClick={() => moveMonth(-1)} aria-label="上个月" title="上个月"><ChevronLeft size={17} /></button>
               <button type="button" onClick={() => moveMonth(1)} aria-label="下个月" title="下个月"><ChevronRight size={17} /></button>
@@ -147,6 +148,7 @@ export default function DatePicker({ label, value, onChange }: DatePickerProps) 
                 <button
                   className={`${currentMonth ? "" : "outside"} ${key === dateKey() ? "today" : ""} ${key === value ? "selected" : ""}`}
                   type="button"
+                  disabled={day.getFullYear() < 100 || day.getFullYear() > 9999}
                   onClick={() => chooseDate(key)}
                   aria-label={`${day.getFullYear()}年${day.getMonth() + 1}月${day.getDate()}日`}
                   aria-pressed={key === value}

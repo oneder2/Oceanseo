@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { completedDateKey, dateFromKey, dateKey } from "./dateUtils";
 import type { Countdown, Task } from "./types";
+import MonthJump from "./MonthJump";
 
 interface CalendarViewProps {
   tasks: Task[];
@@ -83,6 +84,7 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
 
   function moveMonth(offset: number) {
     const next = new Date(month.getFullYear(), month.getMonth() + offset, 1);
+    if (next.getFullYear() < 100 || next.getFullYear() > 9999) return;
     setMonth(next);
     setSelectedDate(dateKey(next));
   }
@@ -96,10 +98,7 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
   return (
     <section className="calendar-view" aria-label="计划日历">
       <header className="calendar-toolbar">
-        <div className="calendar-month-title">
-          <span>{month.getFullYear()}</span>
-          <h2>{month.getMonth() + 1}月</h2>
-        </div>
+        <MonthJump value={month} onChange={date => { setMonth(date); setSelectedDate(dateKey(date)); }} />
         <div className="calendar-stats" aria-label="本月概况">
           <span><Clock3 size={14} />{monthStarts} 项开始</span>
           <span><Hourglass size={14} />{monthCountdowns} 个关键日期</span>
@@ -124,7 +123,7 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
                 className={`calendar-day ${!isCurrentMonth ? "outside" : ""} ${key === selectedDate ? "selected" : ""}`}
                 key={key}
               >
-                <button className={`day-number ${key === dateKey() ? "today" : ""}`} type="button" onClick={() => setSelectedDate(key)} aria-label={`选择${key}`}>
+                <button className={`day-number ${key === dateKey() ? "today" : ""}`} type="button" disabled={day.getFullYear() < 100 || day.getFullYear() > 9999} onClick={() => setSelectedDate(key)} aria-label={`选择${key}`}>
                   {day.getDate()}
                 </button>
                 <div className="day-events">

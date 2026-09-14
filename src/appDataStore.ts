@@ -7,9 +7,11 @@ export const APP_STATE_KEYS = {
   mealChecked: "tideplan.shopping-checked.v1",
   countdowns: "tideplan.countdowns.v1",
   mealPreferences: "tideplan.meal-preferences.v1",
+  beads: "tideplan.bead-pattern.v1",
 } as const;
 
-type AppStateKey = typeof APP_STATE_KEYS[keyof typeof APP_STATE_KEYS];
+type AppStateKey = (typeof APP_STATE_KEYS)[keyof typeof APP_STATE_KEYS];
+const pendingWrites = new Map<AppStateKey, Promise<void>>();
 
 function legacyAppState() {
   const legacy: Record<string, unknown> = {};
@@ -27,7 +29,9 @@ function legacyAppState() {
 
 function mirrorState(state: Record<string, unknown>) {
   for (const key of Object.values(APP_STATE_KEYS)) {
-    if (Object.hasOwn(state, key)) localStorage.setItem(key, JSON.stringify(state[key]));
+    if (Object.hasOwn(state, key))
+      localStorage.setItem(key, JSON.stringify(state[key]));
+    else localStorage.removeItem(key);
   }
 }
 
@@ -41,5 +45,15 @@ export async function bootstrapAppData() {
 
 export async function persistAppState(key: AppStateKey, value: unknown) {
   localStorage.setItem(key, JSON.stringify(value));
-  if (isTauri()) await invoke("set_app_state", { key, value });
+  if (isTauri()) {
+    const write = (pendingWrites.get(key) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => invoke<void>("set_app_state", { key, value }));
+    pendingWrites.set(key, write);
+    try {
+      await write;
+    } finally {
+      if (pendingWrites.get(key) === write) pendingWrites.delete(key);
+    }
+  }
 }

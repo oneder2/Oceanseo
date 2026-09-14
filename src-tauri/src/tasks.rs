@@ -13,13 +13,14 @@ use uuid::Uuid;
 pub const TASK_SCHEMA_VERSION: &str = "1.0.0";
 const LEGACY_MIGRATION_KEY: &str = "tideplan.tasks.v1";
 const BACKUP_SCHEMA_VERSION: &str = "1.0.0";
-const APP_STATE_KEYS: [&str; 6] = [
+const APP_STATE_KEYS: [&str; 7] = [
     "tideplan.reminders.v1",
     "tideplan.purchase-list.v1",
     "tideplan.meal-plan.v1",
     "tideplan.shopping-checked.v1",
     "tideplan.countdowns.v1",
     "tideplan.meal-preferences.v1",
+    "tideplan.bead-pattern.v1",
 ];
 const MAX_APP_STATE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -1289,5 +1290,26 @@ mod tests {
 
         let state = store.bootstrap_app_state(legacy).unwrap();
         assert!(state.is_empty());
+    }
+
+    #[test]
+    fn bead_document_survives_backup_restore_and_restart() {
+        let temp = TempDir::new().unwrap();
+        let document = serde_json::json!({"version": 1, "title": "Beads", "width": 2, "height": 1,
+            "palette": [{"hex": "#ed8467", "name": "Coral"}], "cells": [0, -1]});
+        {
+            let store = test_store(&temp);
+            store
+                .set_app_state("tideplan.bead-pattern.v1", document.clone())
+                .unwrap();
+            let backup = store.export_backup().unwrap();
+            store
+                .set_app_state("tideplan.bead-pattern.v1", serde_json::Value::Null)
+                .unwrap();
+            store.restore_backup(backup).unwrap();
+        }
+        let store = test_store(&temp);
+        let restored = store.bootstrap_app_state(HashMap::new()).unwrap();
+        assert_eq!(restored.get("tideplan.bead-pattern.v1"), Some(&document));
     }
 }
