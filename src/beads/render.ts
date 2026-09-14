@@ -1,4 +1,11 @@
-import { colorCode, counts, ink, type BeadPattern } from "./model";
+import {
+  colorCode,
+  counts,
+  ink,
+  physicalSize,
+  formatCm,
+  type BeadPattern,
+} from "./model";
 export function drawPattern(
   ctx: CanvasRenderingContext2D,
   p: BeadPattern,
@@ -9,6 +16,7 @@ export function drawPattern(
   height: number,
   labels: boolean,
   coordinates = true,
+  contours = true,
 ) {
   const x0 = Math.max(0, Math.floor(-ox / cell)),
     x1 = Math.min(p.width, Math.ceil((width - ox) / cell));
@@ -48,6 +56,33 @@ export function drawPattern(
     ctx.moveTo(Math.max(0, ox), oy + y * cell);
     ctx.lineTo(Math.min(width, ox + p.width * cell), oy + y * cell);
     ctx.stroke();
+  }
+  if (contours) {
+    // Trace occupied/empty boundaries, including holes, without recoloring any bead.
+    ctx.save();
+    ctx.beginPath();
+    const edge = (x: number, y: number, dx: number, dy: number) => {
+      ctx.moveTo(ox + x * cell, oy + y * cell);
+      ctx.lineTo(ox + (x + dx) * cell, oy + (y + dy) * cell);
+    };
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        const i = y * p.width + x;
+        if (p.cells[i] < 0) continue;
+        if (x === 0 || p.cells[i - 1] < 0) edge(x, y, 0, 1);
+        if (x === p.width - 1 || p.cells[i + 1] < 0) edge(x + 1, y, 0, 1);
+        if (y === 0 || p.cells[i - p.width] < 0) edge(x, y, 1, 0);
+        if (y === p.height - 1 || p.cells[i + p.width] < 0)
+          edge(x, y + 1, 1, 0);
+      }
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = Math.min(3.5, cell * 0.35);
+    ctx.stroke();
+    ctx.strokeStyle = "#285966";
+    ctx.lineWidth = Math.min(1.5, cell * 0.2);
+    ctx.stroke();
+    ctx.restore();
   }
   ctx.strokeStyle = "#273e4c";
   ctx.lineWidth = 2;
@@ -92,6 +127,18 @@ export function exportCanvas(p: BeadPattern) {
     48,
     74,
   );
+  const measure = physicalSize(p);
+  const actual = measure.artwork;
+  ctx.font = "13px sans-serif";
+  ctx.fillText(
+    `豆距 ${measure.pitch} mm · 画布 ${formatCm(measure.canvas.width)} × ${formatCm(measure.canvas.height)} cm` +
+      (actual
+        ? ` · 图案约 ${formatCm(actual.width)} × ${formatCm(actual.height)} cm（熨烫前）`
+        : " · 暂无图案"),
+    48,
+    98,
+    width - 96,
+  );
   drawPattern(ctx, p, cell, 56, 128, width, legendY, true);
   ctx.textAlign = "left";
   ctx.fillStyle = "#263b46";
@@ -118,7 +165,7 @@ export function exportCanvas(p: BeadPattern) {
   ctx.fillStyle = "#657984";
   ctx.font = "13px sans-serif";
   ctx.fillText(
-    "潮汐计划 · 拼豆工坊   /   空白格不放豆 · 每五格加粗 · PNG 非实体尺寸打印模板",
+    "空白格不放豆 · 边缘描线为阅读辅助 · 尺寸为估算 · PNG 非 1:1 打印模板",
     48,
     height - 28,
     width - 96,

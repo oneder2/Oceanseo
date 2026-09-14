@@ -64,8 +64,24 @@
 .bead-studio {
   --bead-ink: #263b46;
   --bead-accent: #367c87;
+  --bead-locator: #7457b8;
   color: var(--bead-ink);
   min-width: 0;
+}
+.workspace:has(.bead-studio) {
+  padding-top: 20px;
+}
+.workspace:has(.bead-studio) > .workspace-head {
+  margin-bottom: 12px;
+}
+.workspace:has(.bead-studio) > .workspace-head h1 {
+  font:
+    650 19px "Noto Sans CJK SC",
+    sans-serif;
+  margin-bottom: 0;
+}
+.workspace:has(.bead-studio) > .workspace-head p {
+  display: none;
 }
 .bead-heading {
   display: flex;
@@ -106,14 +122,14 @@
 }
 .bead-layout {
   display: grid;
-  grid-template-columns: 200px minmax(250px, 1fr) 185px;
-  gap: 16px;
+  grid-template-columns: 190px minmax(260px, 1fr) 220px;
+  gap: 14px;
   align-items: start;
 }
 .bead-controls,
 .bead-palette {
   min-width: 0;
-  font-size: 12px;
+  font-size: 13px;
 }
 .bead-controls details {
   border-top: 2px solid #8da8ae;
@@ -129,13 +145,13 @@
   display: grid;
   gap: 7px;
   margin-bottom: 12px;
-  font-size: 12px;
+  font-size: 13px;
 }
 .bead-studio label input:not([type="checkbox"]),
 .bead-studio label select {
   width: 100%;
   min-width: 0;
-  height: 35px;
+  height: 38px;
   padding: 5px 8px;
   border: 1px solid #b8c7cb;
   border-radius: 5px;
@@ -156,15 +172,15 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: 13px;
   margin: 10px 0;
 }
 .bead-check input {
   accent-color: #367c87;
 }
 .bead-help {
-  color: #647780;
-  font-size: 12px;
+  color: #526875;
+  font-size: 13px;
   line-height: 1.6;
   margin: 10px 0 14px;
 }
@@ -217,8 +233,8 @@
 }
 .bead-toolbar button,
 .bead-canvas-footer button {
-  min-width: 30px;
-  min-height: 32px;
+  min-width: 36px;
+  min-height: 36px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -228,7 +244,7 @@
   background: transparent;
   color: #375565;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
 }
 .bead-toolbar button.active {
   background: #367c87;
@@ -238,7 +254,7 @@
   flex: 1;
 }
 .bead-stage {
-  height: clamp(360px, 58vh, 650px);
+  height: clamp(320px, 48vh, 580px);
   width: 100%;
   min-width: 0;
   position: relative;
@@ -258,6 +274,7 @@
 }
 .bead-stage.tool-paint,
 .bead-stage.tool-erase,
+.bead-stage.tool-fill,
 .bead-stage.tool-pick {
   cursor: crosshair;
 }
@@ -323,18 +340,18 @@
 }
 .bead-palette-list strong {
   display: block;
-  font: 600 12px monospace;
+  font: 600 13px monospace;
 }
 .bead-palette-list small {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: 12px;
   color: #5b727e;
 }
 .bead-palette-list em {
-  font-size: 11px;
+  font-size: 12px;
   font-style: normal;
 }
 .bead-status {
@@ -377,7 +394,194 @@
   outline: 2px solid #367c87;
   outline-offset: 2px;
 }
-@media (max-width: 1200px) {
+.bead-size-summary {
+  color: #367c87;
+  font-variant-numeric: tabular-nums;
+}
+.bead-current-color {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: #edf3f4;
+  border-radius: 6px;
+}
+.bead-current-color > i {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid #84949e;
+  border-radius: 50%;
+}
+.bead-current-color small {
+  display: block;
+  color: #526875;
+  overflow-wrap: anywhere;
+}
+.bead-locator {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px dashed #a99ac5;
+  border-left: 4px solid var(--bead-locator);
+  border-radius: 6px;
+  background: #faf8fd;
+}
+.bead-locator > div {
+  min-width: 0;
+}
+.bead-locator-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 650;
+  color: #634591;
+}
+.bead-locator strong {
+  display: block;
+  margin-top: 0;
+  font: 600 16px monospace;
+  color: #493266;
+}
+.bead-locator strong span {
+  font: 13px sans-serif;
+}
+.bead-locator p {
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 5px 0;
+  color: #594b6b;
+}
+.bead-locator p i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  background: var(--bead-locator);
+}
+.bead-locator small {
+  color: #655976;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.bead-locator canvas {
+  width: 100%;
+  max-width: 140px;
+  height: auto;
+  flex-shrink: 0;
+}
+.bead-locator-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.bead-locator button {
+  display: block;
+  margin-top: 8px;
+  padding: 5px 8px;
+  border: 1px solid #a99ac5;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #634591;
+  cursor: pointer;
+  font-size: 12px;
+  min-height: 32px;
+}
+.bead-locator.is-expanded {
+  flex-direction: column;
+  align-items: stretch;
+}
+.bead-locator.is-expanded canvas {
+  width: 100%;
+  max-width: none;
+}
+.bead-locator-backdrop {
+  position: fixed;
+  inset: 0;
+  background: #25313a66;
+  z-index: 60;
+}
+.bead-locator.is-expanded {
+  position: fixed;
+  z-index: 61;
+  inset: 50px 0 20px;
+  width: min(760px, calc(100vw - 32px));
+  margin: auto;
+  padding: 24px;
+  overflow: auto;
+  justify-content: flex-start;
+  box-shadow: 0 20px 60px #263b4640;
+}
+.bead-locator.is-expanded canvas {
+  width: 100%;
+  max-width: 720px;
+  align-self: center;
+}
+.bead-tool-hint {
+  padding: 9px 12px;
+  border: 1px solid #c1d0d6;
+  border-bottom: 0;
+  background: #f5f8f9;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #526875;
+}
+.bead-tool-hint strong {
+  margin-right: 8px;
+  color: #263b46;
+}
+.bead-view-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 14px;
+}
+.bead-measure {
+  margin-top: 24px;
+}
+.bead-measure h2 {
+  font-size: 15px;
+}
+.bead-measure h2 small {
+  font-size: 11px;
+  font-weight: 400;
+  color: #526875;
+}
+.bead-measure dl {
+  margin: 0;
+  padding: 12px;
+  background: #edf3f4;
+  border-radius: 6px;
+}
+.bead-measure dl > div + div {
+  margin-top: 12px;
+}
+.bead-measure dt {
+  font-size: 12px;
+  color: #526875;
+}
+.bead-measure dd {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.bead-error {
+  color: #a23b2c;
+  font-size: 13px;
+}
+.bead-preview-delta {
+  padding: 10px 12px;
+  background: #edf3f4;
+  border-radius: 5px;
+}
+.bead-palette > .bead-action {
+  margin-bottom: 16px;
+}
+@media (max-width: 1100px) {
   .bead-layout {
     grid-template-columns: 180px minmax(240px, 1fr);
   }
@@ -414,8 +618,8 @@
   .bead-heading > button {
     justify-content: center;
   }
-  .bead-toolbar button span {
-    display: none;
+  .bead-toolbar button {
+    min-height: 40px;
   }
   .calendar-toolbar {
     display: flex;

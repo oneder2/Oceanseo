@@ -14,6 +14,8 @@ import {
   ZoomOut,
   Maximize,
   Upload,
+  PaintBucket,
+  ScanLine,
 } from "lucide-react";
 import { APP_STATE_KEYS, persistAppState } from "./appDataStore";
 import {
@@ -24,13 +26,18 @@ import {
   MAX_COLORS,
   resizePattern,
   validSize,
+  physicalSize,
+  formatCm,
   type BeadPattern,
 } from "./beads/model";
 import { drawPattern, exportCanvas } from "./beads/render";
 import type { ConvertOptions } from "./beads/convert";
+import { fillHoles, floodFill, thickenOutline } from "./beads/edit";
+import ColorLocator from "./beads/ColorLocator";
+import PhysicalSize from "./beads/PhysicalSize";
 import "./beads/studio.css";
 
-type Tool = "pan" | "paint" | "erase" | "pick";
+type Tool = "pan" | "paint" | "erase" | "pick" | "fill";
 type Camera = { cell: number; x: number; y: number };
 function load() {
   try {
@@ -51,6 +58,12 @@ export default function BeadStudio() {
     height: pattern.height,
   });
   const [scaleResize, setScaleResize] = useState(false);
+  const [outlineLayers, setOutlineLayers] = useState(1);
+  const [expandOutline, setExpandOutline] = useState(true);
+  const [contours, setContours] = useState(true);
+  const [locator, setLocator] = useState(true);
+  const [paletteSearch, setPaletteSearch] = useState("");
+  const [onlyUsed, setOnlyUsed] = useState(false);
   const [camera, setCamera] = useState<Camera>({ cell: 18, x: 44, y: 40 });
   const [viewport, setViewport] = useState({ width: 600, height: 540 });
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
@@ -78,6 +91,7 @@ export default function BeadStudio() {
   const [history, setHistory] = useState<BeadPattern[]>([]),
     [future, setFuture] = useState<BeadPattern[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null),
+    modalRef = useRef<HTMLElement>(null),
     stageRef = useRef<HTMLDivElement>(null),
     fileRef = useRef<HTMLInputElement>(null);
   const workerRef = useRef<Worker | null>(null),
@@ -96,17 +110,51 @@ export default function BeadStudio() {
   sourceRef.current = source;
   const tally = useMemo(() => counts(pattern), [pattern]);
   const total = tally.reduce((a, b) => a + b, 0);
+  const measure = useMemo(() => physicalSize(pattern), [pattern]);
+  const visibleColors = pattern.palette
+    .map((c, i) => ({ ...c, i }))
+    .filter(
+      (c) =>
+        (!onlyUsed || tally[c.i] > 0) &&
+        `${colorCode(c.i)} ${c.name} ${c.hex}`
+          .toLowerCase()
+          .includes(paletteSearch.toLowerCase()),
+    );
 
   useEffect(() => {
     if (!pending) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    modalRef.current?.focus();
     const dismiss = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.stopPropagation();
         setPending(null);
       }
+      if (event.key === "Tab") {
+        const buttons = modalRef.current?.querySelectorAll<HTMLButtonElement>(
+          "button:not(:disabled)",
+        );
+        if (!buttons?.length) return;
+        const first = buttons[0],
+          last = buttons[buttons.length - 1];
+        if (
+          event.shiftKey &&
+          (document.activeElement === first ||
+            document.activeElement === modalRef.current)
+        ) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener("keydown", dismiss, true);
-    return () => document.removeEventListener("keydown", dismiss, true);
+    return () => {
+      document.removeEventListener("keydown", dismiss, true);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
   }, [pending]);
 
   useEffect(() => {
@@ -182,6 +230,8 @@ export default function BeadStudio() {
       viewport.width,
       viewport.height,
       labels,
+      true,
+      contours,
     );
     if (hover) {
       ctx.strokeStyle = "#ec6f48";
@@ -193,7 +243,7 @@ export default function BeadStudio() {
         camera.cell,
       );
     }
-  }, [pattern, camera, viewport, hover, labels]);
+  }, [pattern, camera, viewport, hover, labels, contours]);
   function bound(c: Camera): Camera {
     return {
       ...c,
@@ -300,11 +350,20 @@ export default function BeadStudio() {
     event.currentTarget.focus();
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = gridPoint(event);
+    if (tool === "fill" && event.button === 0) {
+      if (point)
+        previewEdit(
+          floodFill(pattern, point.x, point.y, color),
+          "将用当前色填充点击位置相连的同色区域（上下左右相连）。",
+        );
+      return;
+    }
     if (tool === "pick" && point) {
       const i = pattern.cells[point.y * pattern.width + point.x];
       if (i >= 0) {
         setColor(i);
-        setTool("paint");
+        setLocator(true);
+        setStatus(`已吸取 ${colorCode(i)}，可选择画笔或填充工具继续编辑`);
       }
       return;
     }
@@ -468,7 +527,11 @@ export default function BeadStudio() {
         }
         if (event.data.pattern) {
           setPending({
-            pattern: { ...event.data.pattern, title: source.name },
+            pattern: {
+              ...event.data.pattern,
+              title: source.name,
+              beadPitchMm: patternRef.current.beadPitchMm,
+            },
             message: "应用导入结果会替换当前图纸。原图纸可通过撤销恢复。",
           });
           setStatus("转换完成，请预览并确认");
@@ -523,11 +586,31 @@ export default function BeadStudio() {
       setBusy(false);
     }
   }
+  function previewEdit(next: BeadPattern, message: string) {
+    if (next === pattern) {
+      setStatus(
+        "没有可修改的格子。填空心需要闭合轮廓；加边需要画布空位或开启自动扩展。",
+      );
+      return;
+    }
+    setPending({ pattern: next, message });
+  }
+  function previewOutline() {
+    try {
+      previewEdit(
+        thickenOutline(pattern, color, outlineLayers, expandOutline),
+        `将用 ${colorCode(color)} 沿外轮廓增加 ${outlineLayers} 层豆（包含斜角），保留原有豆和内孔。${expandOutline ? "触边时自动扩展画布，原图案可能整体移位。" : "限制在当前画布内，触边处无法继续加厚。"}`,
+      );
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "无法加边，请检查尺寸");
+    }
+  }
   const tools: { id: Tool; name: string; icon: typeof Hand }[] = [
     { id: "pan", name: "拖动画布", icon: Hand },
     { id: "paint", name: "画笔", icon: Pencil },
     { id: "erase", name: "橡皮", icon: Eraser },
     { id: "pick", name: "吸管", icon: Pipette },
+    { id: "fill", name: "区域填充", icon: PaintBucket },
   ];
   return (
     <section className="bead-studio" aria-label="拼豆工坊">
@@ -546,6 +629,13 @@ export default function BeadStudio() {
             {pattern.width} × {pattern.height} 格 · {total} 颗豆 ·{" "}
             {tally.filter(Boolean).length} 色 <small>{saveStatus}</small>
           </p>
+          {measure.artwork && (
+            <p className="bead-size-summary">
+              图案约 {formatCm(measure.artwork.width)} ×{" "}
+              {formatCm(measure.artwork.height)} cm{" "}
+              <small>按 {measure.pitch} mm 豆距估算</small>
+            </p>
+          )}
         </div>
         <button
           className="primary-button"
@@ -558,7 +648,73 @@ export default function BeadStudio() {
       </header>
       <div className="bead-layout">
         <aside className="bead-controls" aria-label="导入与图纸设置">
-          <details open>
+          {status && (
+            <p className="bead-status" role="status">
+              {status}
+            </p>
+          )}
+          <details open={total > 0}>
+            <summary>填充与加边</summary>
+            <div className="bead-current-color">
+              <i style={{ background: pattern.palette[color]?.hex }} />
+              <span>
+                使用 {colorCode(color)}
+                <small>{pattern.palette[color]?.name}</small>
+              </span>
+            </div>
+            <p className="bead-help">
+              在右侧选色后操作。所有批量修改先预览，应用后可撤销。
+            </p>
+            <button
+              className="secondary-button"
+              disabled={busy || !total}
+              onClick={() =>
+                previewEdit(
+                  fillHoles(pattern, color),
+                  `用 ${colorCode(color)} 填满所有封闭空洞，保留与画布边缘连通的空白。`,
+                )
+              }
+            >
+              <PaintBucket size={16} />
+              填充所有空心
+            </button>
+            <p className="bead-help">
+              空心按上下左右是否连通判断；只填一处时，使用画布上方的「区域填充」。
+            </p>
+            <label>
+              加边厚度（格）
+              <input
+                type="number"
+                min={1}
+                max={8}
+                value={outlineLayers}
+                onChange={(e) => setOutlineLayers(Number(e.target.value))}
+              />
+            </label>
+            <label className="bead-check">
+              <input
+                type="checkbox"
+                checked={expandOutline}
+                onChange={(e) => setExpandOutline(e.target.checked)}
+              />
+              触边时自动扩展画布
+            </label>
+            <button
+              className="secondary-button"
+              disabled={
+                busy ||
+                !total ||
+                !Number.isInteger(outlineLayers) ||
+                outlineLayers < 1 ||
+                outlineLayers > 8
+              }
+              onClick={previewOutline}
+            >
+              <ScanLine size={16} />
+              预览轮廓加厚
+            </button>
+          </details>
+          <details open={total === 0}>
             <summary>导入图片</summary>
             <input
               ref={fileRef}
@@ -814,6 +970,20 @@ export default function BeadStudio() {
               <Redo2 size={17} />
             </button>
           </div>
+          <div className="bead-tool-hint" aria-live="polite">
+            <strong>{tools.find((t) => t.id === tool)?.name}</strong>
+            <span>
+              {tool === "pan"
+                ? "拖动查看，滚轮缩放。选色只更新定位图。"
+                : tool === "fill"
+                  ? `点击相连区域，用 ${colorCode(color)} 填充；先预览再应用。`
+                  : tool === "pick"
+                    ? "点击图案吸取豆色，不会自动切换为画笔。"
+                    : tool === "erase"
+                      ? "拖动擦除豆子，透明格为空白。"
+                      : `用 ${colorCode(color)} 绘制；一次笔画可整体撤销。`}
+            </span>
+          </div>
           <div ref={stageRef} className={`bead-stage tool-${tool}`}>
             <canvas
               ref={canvasRef}
@@ -858,33 +1028,71 @@ export default function BeadStudio() {
               </button>
             </div>
           </div>
-          <label className="bead-check">
-            <input
-              type="checkbox"
-              checked={labels}
-              onChange={(e) => setLabels(e.target.checked)}
-            />
-            显示每颗豆的编号{" "}
-            {camera.cell < 18 && "· 放大后显示，导出始终包含编号"}
-          </label>
+          <div className="bead-view-options">
+            <label className="bead-check">
+              <input
+                type="checkbox"
+                checked={locator}
+                onChange={(e) => setLocator(e.target.checked)}
+              />
+              同色定位图
+            </label>
+            <label className="bead-check">
+              <input
+                type="checkbox"
+                checked={contours}
+                onChange={(e) => setContours(e.target.checked)}
+              />
+              高亮图案边缘
+            </label>
+            <label className="bead-check">
+              <input
+                type="checkbox"
+                checked={labels}
+                onChange={(e) => setLabels(e.target.checked)}
+              />
+              显示每颗豆的编号{" "}
+              {camera.cell < 18 && "· 放大后显示，导出始终包含编号"}
+            </label>
+          </div>
           <p className="bead-help">
-            导出包含整个图纸（含屏幕外部分）、色号、坐标、尺寸和用色清单。每五格加粗；空白格不放豆。
+            深浅双线标出图案与空白的边界，不增加豆子。导出保留边缘辅助线、完整图纸、尺寸及用色清单，不包含同色定位图。
           </p>
-          {status && (
-            <p className="bead-status" role="status">
-              {status}
-            </p>
-          )}
         </div>
         <aside className="bead-palette" aria-label="豆色与用量">
+          {locator && (
+            <ColorLocator
+              pattern={pattern}
+              color={color}
+              count={tally[color] ?? 0}
+            />
+          )}
           <h2>
             豆色与用量 <span>{tally.filter(Boolean).length} 色</span>
           </h2>
           <p className="bead-help">
-            B 编号为本图纸编号。请对照实体豆，填写品牌色号或名称。
+            选色后在独立定位图中查看所有位置。B
+            编号为图纸编号，可自行填写品牌色号。
           </p>
+          <label>
+            查找豆色
+            <input
+              type="search"
+              value={paletteSearch}
+              onChange={(e) => setPaletteSearch(e.target.value)}
+              placeholder="色号、名称或 HEX"
+            />
+          </label>
+          <label className="bead-check">
+            <input
+              type="checkbox"
+              checked={onlyUsed}
+              onChange={(e) => setOnlyUsed(e.target.checked)}
+            />
+            只看已使用的颜色
+          </label>
           <div className="bead-palette-list">
-            {pattern.palette.map((c, i) => (
+            {visibleColors.map(({ i, ...c }) => (
               <button
                 key={i}
                 className={color === i ? "active" : ""}
@@ -892,7 +1100,7 @@ export default function BeadStudio() {
                 aria-pressed={color === i}
                 onClick={() => {
                   setColor(i);
-                  setTool("paint");
+                  setLocator(true);
                 }}
               >
                 <i style={{ background: c.hex }} />
@@ -903,7 +1111,19 @@ export default function BeadStudio() {
                 <em>{tally[i]} 颗</em>
               </button>
             ))}
+            {!visibleColors.length && (
+              <p className="bead-help">没有匹配颜色，请清空搜索或关闭筛选。</p>
+            )}
           </div>
+          <button
+            className="bead-action"
+            onClick={() => {
+              setTool("paint");
+              canvasRef.current?.focus();
+            }}
+          >
+            用 {colorCode(color)} 绘制
+          </button>
           <label>
             当前色名称
             <input
@@ -950,6 +1170,12 @@ export default function BeadStudio() {
           >
             添加颜色
           </button>
+          <PhysicalSize
+            pattern={pattern}
+            onChange={(pitch) =>
+              setPattern((p) => ({ ...p, beadPitchMm: pitch }))
+            }
+          />
         </aside>
       </div>
       {pending && (
@@ -960,6 +1186,8 @@ export default function BeadStudio() {
           }}
         >
           <section
+            ref={modalRef}
+            tabIndex={-1}
             className="modal bead-preview-modal"
             role="dialog"
             aria-modal="true"
@@ -973,6 +1201,14 @@ export default function BeadStudio() {
               {counts(pending.pattern).filter(Boolean).length} 色 ·{" "}
               {pending.pattern.cells.filter((c) => c >= 0).length} 颗豆
             </p>
+            <p className="bead-preview-delta">
+              应用后豆数变化：
+              {pending.pattern.cells.filter((c) => c >= 0).length - total >= 0
+                ? "+"
+                : ""}
+              {pending.pattern.cells.filter((c) => c >= 0).length - total} 颗 ·
+              当前操作可撤销
+            </p>
             <footer>
               <button
                 className="secondary-button"
@@ -984,9 +1220,11 @@ export default function BeadStudio() {
                 className="primary-button"
                 onClick={() => {
                   commit(pending.pattern);
-                  setColor(0);
+                  setColor((c) =>
+                    Math.min(c, pending.pattern.palette.length - 1),
+                  );
                   setPending(null);
-                  setStatus("图纸已应用，可使用画笔继续修改");
+                  setStatus("图纸已应用，可撤销或继续编辑");
                 }}
               >
                 应用图纸

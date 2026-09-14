@@ -7,7 +7,9 @@ import {
   isPattern,
   resizePattern,
   ink,
+  physicalSize,
 } from "../src/beads/model";
+import { fillHoles, floodFill, thickenOutline } from "../src/beads/edit";
 import { dateFromKey, dateKey } from "../src/dateUtils";
 
 test("calendar dates preserve leap years and centuries during year jumps", () => {
@@ -117,4 +119,89 @@ test("maximum conversion stays within declared bounds", () => {
   assert.ok(isPattern(p));
   assert.ok(p.palette.length <= 48);
   assert.equal(p.cells.length, 25600);
+});
+
+function ring() {
+  const p = blankPattern(7, 7);
+  for (let y = 1; y <= 5; y++)
+    for (let x = 1; x <= 5; x++)
+      if (x === 1 || x === 5 || y === 1 || y === 5) p.cells[y * 7 + x] = 0;
+  return p;
+}
+test("hole filling preserves outside background and existing bead colors", () => {
+  const p = ring(),
+    before = [...p.cells];
+  const filled = fillHoles(p, 2);
+  assert.equal(counts(filled)[2], 9);
+  assert.equal(counts(filled)[0], 16);
+  assert.equal(filled.cells[0], -1);
+  assert.deepEqual(p.cells, before);
+  const open = ring();
+  open.cells[1 * 7 + 3] = -1;
+  assert.equal(fillHoles(open, 2), open);
+  assert.equal(
+    fillHoles(blankPattern(), 0).cells.filter((c) => c >= 0).length,
+    0,
+  );
+});
+test("region fill affects only the clicked four-connected component", () => {
+  const p = { ...blankPattern(3, 3), cells: [0, 1, 0, 1, 0, 1, 0, 1, -1] };
+  const next = floodFill(p, 1, 1, 2);
+  assert.deepEqual(next.cells, [0, 1, 0, 1, 2, 1, 0, 1, -1]);
+  assert.equal(floodFill(p, 0, 0, 0), p);
+  assert.equal(floodFill(p, -1, 0, 1), p);
+  assert.throws(() => floodFill(p, 0, 0, 99));
+  assert.equal(counts(floodFill(ring(), 3, 3, 2))[2], 9);
+});
+test("outline grows outward while preserving holes and the source", () => {
+  const p = ring(),
+    next = thickenOutline(p, 2, 1, true);
+  assert.equal(next.width, 7);
+  assert.equal(next.height, 7);
+  assert.equal(counts(next)[2], 24);
+  assert.equal(counts(next)[0], 16);
+  assert.equal(next.cells[3 * 7 + 3], -1);
+  assert.equal(counts(p)[2], 0);
+  const larger = thickenOutline(p, 2, 2, true);
+  assert.equal(larger.width, 9);
+  assert.equal(larger.height, 9);
+  assert.equal(counts(larger)[2], 56);
+  assert.equal(larger.cells[4 * 9 + 4], -1);
+});
+test("outline expands at canvas edges or clips only when expansion is disabled", () => {
+  const p = { ...blankPattern(1, 1), cells: [0], beadPitchMm: 2.6 };
+  const next = thickenOutline(p, 1, 2, true);
+  assert.equal(next.width, 5);
+  assert.equal(next.height, 5);
+  assert.equal(next.cells[12], 0);
+  assert.equal(counts(next)[1], 24);
+  assert.equal(next.beadPitchMm, 2.6);
+  assert.equal(thickenOutline(p, 1, 2, false), p);
+  assert.equal(
+    thickenOutline(blankPattern(), 0, 1, true).cells.filter((c) => c >= 0)
+      .length,
+    0,
+  );
+  const huge = blankPattern(160, 160);
+  huge.cells.fill(0);
+  assert.throws(() => thickenOutline(huge, 1, 1, true), /160/);
+  assert.equal(thickenOutline(huge, 1, 1, false), huge);
+  assert.throws(() => thickenOutline(p, 1, 0, true), /1–8/);
+  assert.equal(huge.cells.length, 25600);
+});
+test("physical dimensions distinguish occupied artwork from transparent margins", () => {
+  const p = ring();
+  assert.deepEqual(physicalSize(p), {
+    pitch: 5,
+    canvas: { width: 3.5, height: 3.5 },
+    artwork: { width: 2.5, height: 2.5 },
+  });
+  const mini = { ...p, beadPitchMm: 2.6 };
+  assert.equal(physicalSize(mini).artwork?.width, 1.3);
+  assert.equal(physicalSize(blankPattern()).artwork, null);
+  assert.equal(isPattern(mini), true);
+  for (const beadPitchMm of [0, -1, NaN, Infinity, 21])
+    assert.equal(isPattern({ ...p, beadPitchMm }), false);
+  assert.equal(isPattern(JSON.parse(JSON.stringify(mini))), true);
+  assert.equal(resizePattern(mini, 8, 8, false).beadPitchMm, 2.6);
 });

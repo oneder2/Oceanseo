@@ -9,6 +9,8 @@ export interface BeadPattern {
   height: number;
   palette: BeadColor[];
   cells: number[];
+  /** Nominal peg/bead spacing in millimetres; older documents default to 5 mm. */
+  beadPitchMm?: number;
 }
 export const MAX_SIZE = 160;
 export const MAX_COLORS = 256;
@@ -41,6 +43,7 @@ export function isPattern(value: unknown): value is BeadPattern {
     p.title.length <= 80 &&
     validSize(p.width) &&
     validSize(p.height) &&
+    (p.beadPitchMm === undefined || validPitch(p.beadPitchMm)) &&
     Array.isArray(p.palette) &&
     p.palette.length > 0 &&
     p.palette.length <= MAX_COLORS &&
@@ -90,4 +93,41 @@ export function ink(hex: string) {
   return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722 > 0.179
     ? "#172127"
     : "#ffffff";
+}
+
+export function validPitch(value: number) {
+  return Number.isFinite(value) && value >= 0.5 && value <= 20;
+}
+export function occupiedBounds(p: BeadPattern) {
+  let left = p.width,
+    top = p.height,
+    right = -1,
+    bottom = -1;
+  p.cells.forEach((c, i) => {
+    if (c < 0) return;
+    const x = i % p.width,
+      y = Math.floor(i / p.width);
+    left = Math.min(left, x);
+    right = Math.max(right, x);
+    top = Math.min(top, y);
+    bottom = Math.max(bottom, y);
+  });
+  return right < 0 ? null : { left, top, right, bottom };
+}
+export function physicalSize(p: BeadPattern) {
+  const pitch = p.beadPitchMm ?? 5;
+  const bounds = occupiedBounds(p);
+  return {
+    pitch,
+    canvas: { width: (p.width * pitch) / 10, height: (p.height * pitch) / 10 },
+    artwork: bounds
+      ? {
+          width: ((bounds.right - bounds.left + 1) * pitch) / 10,
+          height: ((bounds.bottom - bounds.top + 1) * pitch) / 10,
+        }
+      : null,
+  };
+}
+export function formatCm(value: number) {
+  return Number(value.toFixed(2)).toString();
 }
