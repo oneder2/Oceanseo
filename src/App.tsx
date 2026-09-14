@@ -23,6 +23,8 @@ import {
   EyeOff,
   KeyRound,
   Menu,
+  Maximize,
+  Minimize,
   Minus,
   NotebookPen,
   Pin,
@@ -54,6 +56,7 @@ import type { DataBackup } from "./backupStore";
 import { dateKey } from "./dateUtils";
 import { countdownDays, loadCountdowns } from "./countdownStore";
 import { useDailyReminders } from "./useDailyReminders";
+import { useFullscreen } from "./useFullscreen";
 import {
   bootstrapTasks,
   createTask,
@@ -80,7 +83,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.6.0";
+const FALLBACK_APP_VERSION = "0.6.1";
 
 const horizons: Array<{
   id: Horizon;
@@ -210,6 +213,7 @@ export default function App() {
   const [pendingBackup, setPendingBackup] = useState<DataBackup | null>(null);
   const [backupError, setBackupError] = useState("");
   const [toast, setToast] = useState("");
+  const { fullscreen, busy: fullscreenBusy, toggle: toggleFullscreen } = useFullscreen(setToast);
   const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, countdowns, reminderSettings);
 
   useEffect(() => {
@@ -629,7 +633,7 @@ export default function App() {
   }
 
   async function beginDrag(event: React.MouseEvent) {
-    if (event.button === 0 && isTauri()) await getCurrentWindow().startDragging();
+    if (event.button === 0 && isTauri() && !fullscreen) await getCurrentWindow().startDragging();
   }
 
   async function testNotification() {
@@ -767,7 +771,7 @@ export default function App() {
           : "按照时间跨度，安排手边与远方。";
 
   return (
-    <div className="desktop-shell">
+    <div className={`desktop-shell${fullscreen ? " is-fullscreen" : ""}`}>
       <header className="titlebar" onMouseDown={beginDrag}>
         <button
           className="titlebar-menu"
@@ -794,6 +798,18 @@ export default function App() {
           </button>
           <button type="button" onClick={() => void handleWindowAction("minimize")} aria-label="最小化" title="最小化">
             <Minus size={15} />
+          </button>
+          <button
+            className={fullscreen ? "is-active" : ""}
+            type="button"
+            onClick={() => void toggleFullscreen()}
+            disabled={fullscreenBusy}
+            aria-label={fullscreen ? "退出全屏" : "进入全屏"}
+            aria-pressed={fullscreen}
+            aria-keyshortcuts="F11"
+            title={fullscreen ? "退出全屏（F11 / Esc）" : "进入全屏（F11）"}
+          >
+            {fullscreen ? <Minimize size={15} /> : <Maximize size={15} />}
           </button>
           <button className="window-close" type="button" onClick={() => void handleWindowAction("close")} aria-label="隐藏到托盘" title="隐藏到托盘">
             <X size={15} />
