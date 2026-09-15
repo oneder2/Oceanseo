@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -48,6 +48,13 @@ import HomeDashboard from "./HomeDashboard";
 import MealPlanner from "./MealPlanner";
 import ShoppingList from "./ShoppingList";
 import WorkMonitorDashboard from "./WorkMonitorDashboard";
+import PeoplePage from "./life/PeoplePage";
+import FitnessPage from "./life/FitnessPage";
+import TravelPage from "./life/TravelPage";
+import MapSettings from "./life/MapSettings";
+import { emptyLife, isLifeData, lifeEvents, type LifeData } from "./life/model";
+import { loadLife } from "./life/store";
+import "./life/life.css";
 import { getAiSettings, saveAiSettings } from "./aiSettingsStore";
 import type { AiSettings } from "./aiSettingsStore";
 import { APP_STATE_KEYS, bootstrapAppData, persistAppState } from "./appDataStore";
@@ -83,7 +90,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.8.0";
+const FALLBACK_APP_VERSION = "0.9.0";
 
 const horizons: Array<{
   id: Horizon;
@@ -207,6 +214,23 @@ export default function App() {
   const [countdowns, setCountdowns] = useState(loadCountdowns);
   const [selectedCountdownId, setSelectedCountdownId] = useState<string | null>(null);
   const [appDataReady, setAppDataReady] = useState(false);
+  const [life, setLife] = useState<LifeData>(emptyLife);
+  const lifeRef = useRef(life);
+  lifeRef.current = life;
+  const [lifeReady, setLifeReady] = useState(false);
+  const [lifeError, setLifeError] = useState("");
+  const [lifeSaveError, setLifeSaveError] = useState("");
+  const [lifeSelection, setLifeSelection] = useState<{id:string;date:string}|undefined>();
+  const calendarLifeEvents = useMemo(()=>lifeEvents(life),[life]);
+  function updateLife(update:(d:LifeData)=>LifeData) {
+    const next=update(lifeRef.current);
+    if(!isLifeData(next) || new TextEncoder().encode(JSON.stringify(next)).length > 2 * 1024 * 1024) {
+      setToast("未保存：数据无效或超过 2 MB，请检查内容、减少路线数据后重试");
+      return;
+    }
+    lifeRef.current=next;
+    setLife(next);
+  }
   const [workOverview, setWorkOverview] = useState<WorkDashboard | null>(null);
   const [appVersion, setAppVersion] = useState(FALLBACK_APP_VERSION);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -215,6 +239,17 @@ export default function App() {
   const [toast, setToast] = useState("");
   const { fullscreen, busy: fullscreenBusy, toggle: toggleFullscreen } = useFullscreen(setToast);
   const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, countdowns, reminderSettings);
+
+  useEffect(()=>{
+    if(!appDataReady)return;
+    try{setLife(loadLife());setLifeReady(true);}catch(e){setLifeError(e instanceof Error?e.message:"人物与生活计划读取失败");}
+  },[appDataReady]);
+  useEffect(()=>{
+    if(!lifeReady)return;
+    let active=true;
+    void persistAppState(APP_STATE_KEYS.life,life).then(()=>{if(active)setLifeSaveError("");}).catch(()=>{if(active)setLifeSaveError("人物与生活计划保存失败，请重试保存或导出备份后重启");});
+    return()=>{active=false;};
+  },[life,lifeReady]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -732,7 +767,7 @@ export default function App() {
     setView("countdowns");
   }
 
-  const title = view === "bead-studio" ? "拼豆图纸" : view === "overview"
+  const title = view === "people" ? "人物档案" : view === "fitness" ? "训练计划" : view === "travel" ? "旅行规划" : view === "bead-studio" ? "拼豆图纸" : view === "overview"
     ? "今日总览"
     : view === "today"
     ? "今日计划"
@@ -750,7 +785,7 @@ export default function App() {
         ? "完成记录"
         : "所有计划";
   const subtitle =
-    view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
+    view === "people" ? "把关心的人与他们的偏好，变成计划的基础。" : view === "fitness" ? "让每个训练周期都有可执行的目标和真实记录。" : view === "travel" ? "从同行者的偏好出发，把日程连成路线。" : view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
       ? "把计划、时间、生活与工作放进同一条节奏里。"
       : view === "today"
       ? overdueCount
@@ -824,7 +859,7 @@ export default function App() {
             <strong>{currentGreeting()}</strong>
           </div>
 
-          <WorkspaceNav view={view} onNavigate={next => { setView(next); setMobileMenuOpen(false); }} />
+          <WorkspaceNav view={view} onNavigate={next => { setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }} />
 
           <section className="progress-panel" aria-label="计划进度">
             <div className="progress-heading">
@@ -856,7 +891,7 @@ export default function App() {
               <p>{subtitle}</p>
             </div>
             <div className="head-actions">
-              {view !== "bead-studio" && view !== "overview" && view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
+              {["today", "all", "completed"].includes(view) && (
                 <label className="search-field">
                   <Search size={17} />
                   <span className="sr-only">搜索计划</span>
@@ -868,7 +903,7 @@ export default function App() {
                   )}
                 </label>
               )}
-              {view !== "bead-studio" && view !== "overview" && view !== "calendar" && view !== "countdowns" && view !== "meal-planner" && view !== "shopping-list" && view !== "work-monitor" && (
+              {["today", "all", "completed"].includes(view) && (
                 <button className="primary-button" type="button" onClick={() => openNewTask("short")}>
                   <Plus size={18} strokeWidth={2.5} />
                   <span>新计划</span>
@@ -877,7 +912,8 @@ export default function App() {
             </div>
           </section>
 
-          {view === "bead-studio" ? (appDataReady ? <BeadStudio /> : <p role="status">正在读取图纸…</p>) : view === "overview" ? (
+          {lifeSaveError && <div role="alert" className="life-message">{lifeSaveError}<button className="secondary-button" onClick={()=>setLife(d=>({...d}))}>重试保存</button></div>}
+          {["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? (appDataReady ? <BeadStudio /> : <p role="status">正在读取图纸…</p>) : view === "overview" ? (
             <HomeDashboard
               tasks={tasks}
               countdowns={countdowns}
@@ -926,6 +962,8 @@ export default function App() {
               onOpenTask={openTask}
               onOpenCountdown={openCountdown}
               onNewTask={(startDate) => openNewTask("short", startDate)}
+              lifeEvents={calendarLifeEvents}
+              onOpenLife={event=>{setLifeSelection({id:event.targetId,date:event.date});setView(event.kind==="training"?"fitness":"travel");}}
             />
           ) : view === "countdowns" ? (
             <CountdownView
@@ -1220,7 +1258,7 @@ export default function App() {
                 <span className="setting-icon ai-setting-icon"><KeyRound size={18} /></span>
                 <div>
                   <strong>AI 服务</strong>
-                  <p>工作周报与 AI 食谱共用此配置。</p>
+                  <p>工作周报、AI 食谱、训练与旅行 Agent 共用此配置。</p>
                 </div>
                 <span className={`ai-config-state ${aiSettings?.apiKeyConfigured ? "is-ready" : ""}`}>
                   {aiSettings?.apiKeyConfigured ? `已配置 ${aiSettings.apiKeyHint ?? ""}` : "未配置"}
@@ -1264,12 +1302,13 @@ export default function App() {
                 </footer>
               </form>
             </section>
+            <MapSettings />
             <section className="data-backup-section" aria-label="数据备份与恢复">
               <header>
                 <span className="setting-icon backup-setting-icon"><DatabaseBackup size={18} /></span>
                 <div>
                   <strong>数据备份与恢复</strong>
-                  <p>导出计划、关键日期、食谱、采购、拼豆图纸与提醒设置，不包含 API 密钥。</p>
+                  <p>导出计划、人物档案、训练记录、旅行、食谱、采购、拼豆图纸与提醒设置，不包含 AI 或地图密钥。</p>
                 </div>
                 <span className="sqlite-state"><ShieldCheck size={12} />SQLite</span>
               </header>

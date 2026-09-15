@@ -9,6 +9,9 @@ import {
   ShoppingBasket,
   Sparkles,
   Grid2X2,
+  Users,
+  Dumbbell,
+  MapPin,
 } from "lucide-react";
 import type { View } from "./types";
 
@@ -29,6 +32,7 @@ export default function WorkspaceNav({
         { view: "overview", label: "总览", icon: Gauge },
         { view: "calendar", label: "计划日历", icon: CalendarRange },
         { view: "countdowns", label: "关键日期", icon: Hourglass },
+        { view: "people", label: "人物档案", icon: Users },
       ],
     },
     {
@@ -47,10 +51,12 @@ export default function WorkspaceNav({
       ],
     },
     {
-      name: "生活饮食",
+      name: "生活与出行",
       items: [
         { view: "meal-planner", label: "AI 食谱", icon: ChefHat },
         { view: "shopping-list", label: "采购清单", icon: ShoppingBasket },
+        { view: "fitness", label: "训练计划", icon: Dumbbell },
+        { view: "travel", label: "旅行规划", icon: MapPin },
       ],
     },
   ];

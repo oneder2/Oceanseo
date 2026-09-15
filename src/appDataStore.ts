@@ -8,6 +8,7 @@ export const APP_STATE_KEYS = {
   countdowns: "tideplan.countdowns.v1",
   mealPreferences: "tideplan.meal-preferences.v1",
   beads: "tideplan.bead-pattern.v1",
+  life: "tideplan.life.v1",
 } as const;
 
 type AppStateKey = (typeof APP_STATE_KEYS)[keyof typeof APP_STATE_KEYS];

@@ -12,6 +12,8 @@ mod ai_settings;
 mod deep_links;
 mod tasks;
 mod work_monitor;
+mod planning;
+mod maps;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -252,6 +254,11 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             generate_meal_plan,
+            planning::run_planning_agent,
+            maps::get_map_settings,
+            maps::save_map_settings,
+            maps::search_places,
+            maps::plan_map_route,
             ai_settings::get_ai_settings,
             ai_settings::save_ai_settings,
             tasks::list_tasks,
@@ -282,6 +289,7 @@ pub fn run() {
                 ai_settings::AiSettingsStore::open(&app_data_dir.join("ai-settings.json"))
                     .map_err(std::io::Error::other)?;
             app.manage(ai_settings_store);
+            app.manage(maps::MapStore::open(&app_data_dir.join("map-settings.json")).map_err(std::io::Error::other)?);
             let task_store = tasks::TaskStore::open(&app_data_dir.join("oceanseo-tasks.sqlite3"))
                 .map_err(std::io::Error::other)?;
             app.manage(task_store);

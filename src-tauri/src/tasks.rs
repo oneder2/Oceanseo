@@ -13,7 +13,7 @@ use uuid::Uuid;
 pub const TASK_SCHEMA_VERSION: &str = "1.0.0";
 const LEGACY_MIGRATION_KEY: &str = "tideplan.tasks.v1";
 const BACKUP_SCHEMA_VERSION: &str = "1.0.0";
-const APP_STATE_KEYS: [&str; 7] = [
+const APP_STATE_KEYS: [&str; 8] = [
     "tideplan.reminders.v1",
     "tideplan.purchase-list.v1",
     "tideplan.meal-plan.v1",
@@ -21,6 +21,7 @@ const APP_STATE_KEYS: [&str; 7] = [
     "tideplan.countdowns.v1",
     "tideplan.meal-preferences.v1",
     "tideplan.bead-pattern.v1",
+    "tideplan.life.v1",
 ];
 const MAX_APP_STATE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -1311,5 +1312,23 @@ mod tests {
         let store = test_store(&temp);
         let restored = store.bootstrap_app_state(HashMap::new()).unwrap();
         assert_eq!(restored.get("tideplan.bead-pattern.v1"), Some(&document));
+    }
+
+    #[test]
+    fn people_training_and_travel_survive_backup_and_restart() {
+        let temp = TempDir::new().unwrap();
+        let document = serde_json::json!({"version":1,"people":[{"id":"p","name":"Test"}],
+            "training":[{"id":"f","personId":"p"}],"workouts":[{"id":"w","planId":"f","actual":{"e":[12,10,8]}}],
+            "trips":[{"id":"t","participantIds":["p"],"stops":[],"routes":[]}]});
+        {
+            let store = test_store(&temp);
+            store.set_app_state("tideplan.life.v1", document.clone()).unwrap();
+            let backup = store.export_backup().unwrap();
+            assert!(!backup.app_state.contains_key("map-settings"));
+            store.set_app_state("tideplan.life.v1", serde_json::Value::Null).unwrap();
+            store.restore_backup(backup).unwrap();
+        }
+        let store = test_store(&temp);
+        assert_eq!(store.bootstrap_app_state(HashMap::new()).unwrap().get("tideplan.life.v1"), Some(&document));
     }
 }

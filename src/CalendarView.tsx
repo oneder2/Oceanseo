@@ -12,6 +12,7 @@ import {
 import { completedDateKey, dateFromKey, dateKey } from "./dateUtils";
 import type { Countdown, Task } from "./types";
 import MonthJump from "./MonthJump";
+import type { LifeEvent } from "./life/model";
 
 interface CalendarViewProps {
   tasks: Task[];
@@ -19,11 +20,14 @@ interface CalendarViewProps {
   onOpenTask: (task: Task) => void;
   onOpenCountdown: (countdown: Countdown) => void;
   onNewTask: (date: string) => void;
+  lifeEvents?: LifeEvent[];
+  onOpenLife?: (event: LifeEvent) => void;
 }
 
 type CalendarEvent =
   | { type: "task"; task: Task; kind: "start" | "due" | "completed"; label: string }
-  | { type: "countdown"; countdown: Countdown; kind: "countdown"; label: string };
+  | { type: "countdown"; countdown: Countdown; kind: "countdown"; label: string }
+  | { type: "life"; event: LifeEvent; kind: "training" | "travel"; label: string };
 
 const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
@@ -37,7 +41,7 @@ function monthDays(month: Date) {
   );
 }
 
-function eventsForDate(tasks: Task[], countdowns: Countdown[], day: string): CalendarEvent[] {
+function eventsForDate(tasks: Task[], countdowns: Countdown[], day: string, life: LifeEvent[] = []): CalendarEvent[] {
   const taskEvents = tasks.flatMap((task) => {
     const events: CalendarEvent[] = [];
     if (task.startDate === day) events.push({ type: "task", task, kind: "start", label: "开始" });
@@ -55,17 +59,18 @@ function eventsForDate(tasks: Task[], countdowns: Countdown[], day: string): Cal
   const countdownEvents: CalendarEvent[] = countdowns
     .filter((countdown) => countdown.targetDate === day)
     .map((countdown) => ({ type: "countdown", countdown, kind: "countdown", label: "关键日期" }));
-  return [...countdownEvents, ...taskEvents];
+  const extra: CalendarEvent[] = life.filter(e=>e.date===day).map(event=>({type:"life",event,kind:event.kind,label:event.kind==="training"?event.done?"训练已完成":"训练待清点":"旅行安排"}));
+  return [...extra, ...countdownEvents, ...taskEvents];
 }
 
-export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCountdown, onNewTask }: CalendarViewProps) {
+export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCountdown, onNewTask, lifeEvents = [], onOpenLife }: CalendarViewProps) {
   const now = new Date();
   const [month, setMonth] = useState(() => new Date(now.getFullYear(), now.getMonth(), 1));
   const [selectedDate, setSelectedDate] = useState(dateKey());
   const days = useMemo(() => monthDays(month), [month]);
   const selectedEvents = useMemo(
-    () => eventsForDate(tasks, countdowns, selectedDate),
-    [tasks, countdowns, selectedDate],
+    () => eventsForDate(tasks, countdowns, selectedDate, lifeEvents),
+    [tasks, countdowns, selectedDate, lifeEvents],
   );
 
   const monthPrefix = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
@@ -75,11 +80,12 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
 
   function openEvent(event: CalendarEvent) {
     if (event.type === "task") onOpenTask(event.task);
+    else if (event.type === "life") onOpenLife?.(event.event);
     else onOpenCountdown(event.countdown);
   }
 
   function eventTitle(event: CalendarEvent) {
-    return event.type === "task" ? event.task.title : event.countdown.title;
+    return event.type === "task" ? event.task.title : event.type === "life" ? `${event.event.done ? "✓ " : ""}${event.event.title}` : event.countdown.title;
   }
 
   function moveMonth(offset: number) {
@@ -116,7 +122,7 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
           {weekdays.map((weekday) => <div className="weekday" key={weekday}>{weekday}</div>)}
           {days.map((day) => {
             const key = dateKey(day);
-            const events = eventsForDate(tasks, countdowns, key);
+            const events = eventsForDate(tasks, countdowns, key, lifeEvents);
             const isCurrentMonth = day.getMonth() === month.getMonth();
             return (
               <div
@@ -128,7 +134,7 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
                 </button>
                 <div className="day-events">
                   {events.slice(0, 3).map((event, index) => (
-                    <button className={`calendar-event event-${event.kind}`} type="button" onClick={() => openEvent(event)} key={`${event.type === "task" ? event.task.id : event.countdown.id}-${event.kind}-${index}`} title={`${event.label}：${eventTitle(event)}`}>
+                    <button className={`calendar-event event-${event.kind}`} type="button" onClick={() => openEvent(event)} key={`${event.kind}-${index}`} title={`${event.label}：${eventTitle(event)}`}>
                       {event.kind === "completed" && <Check size={10} />}
                       {event.kind === "countdown" && <Hourglass size={9} />}
                       <span>{eventTitle(event)}</span>
@@ -152,7 +158,7 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
         </header>
         <div className="agenda-list">
           {selectedEvents.map((event, index) => (
-            <button className={`agenda-item event-${event.kind}`} type="button" key={`${event.type === "task" ? event.task.id : event.countdown.id}-${event.kind}-${index}`} onClick={() => openEvent(event)}>
+            <button className={`agenda-item event-${event.kind}`} type="button" key={`${event.kind}-${index}`} onClick={() => openEvent(event)}>
               <span className="agenda-kind">{event.label}</span>
               <strong>{eventTitle(event)}</strong>
               {event.type === "task" && event.task.priority === "important" && <Flag size={13} fill="currentColor" />}
