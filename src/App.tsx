@@ -83,7 +83,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.7.0";
+const FALLBACK_APP_VERSION = "0.8.0";
 
 const horizons: Array<{
   id: Horizon;
