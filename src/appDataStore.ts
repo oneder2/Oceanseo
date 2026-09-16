@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { ReliableState } from "./reliableState";
 
 export const APP_STATE_KEYS = {
   reminders: "tideplan.reminders.v1",
@@ -12,7 +13,25 @@ export const APP_STATE_KEYS = {
 } as const;
 
 type AppStateKey = (typeof APP_STATE_KEYS)[keyof typeof APP_STATE_KEYS];
-const pendingWrites = new Map<AppStateKey, Promise<void>>();
+export const appPersistence = new ReliableState(
+  localStorage,
+  Object.values(APP_STATE_KEYS),
+  (key, value) =>
+    isTauri()
+      ? invoke<void>("set_app_state", { key, value })
+      : Promise.resolve(),
+);
+const flushers = new Set<() => void>();
+export function registerStateFlusher(flush: () => void) {
+  flushers.add(flush);
+  return () => {
+    flushers.delete(flush);
+  };
+}
+export async function flushAppData() {
+  flushers.forEach((fn) => fn());
+  await appPersistence.flush();
+}
 
 function legacyAppState() {
   const legacy: Record<string, unknown> = {};
@@ -28,33 +47,14 @@ function legacyAppState() {
   return legacy;
 }
 
-function mirrorState(state: Record<string, unknown>) {
-  for (const key of Object.values(APP_STATE_KEYS)) {
-    if (Object.hasOwn(state, key))
-      localStorage.setItem(key, JSON.stringify(state[key]));
-    else localStorage.removeItem(key);
-  }
-}
-
 export async function bootstrapAppData() {
   if (!isTauri()) return;
   const state = await invoke<Record<string, unknown>>("bootstrap_app_state", {
     legacy: legacyAppState(),
   });
-  mirrorState(state);
+  await appPersistence.recover(state);
 }
 
 export async function persistAppState(key: AppStateKey, value: unknown) {
-  localStorage.setItem(key, JSON.stringify(value));
-  if (isTauri()) {
-    const write = (pendingWrites.get(key) ?? Promise.resolve())
-      .catch(() => undefined)
-      .then(() => invoke<void>("set_app_state", { key, value }));
-    pendingWrites.set(key, write);
-    try {
-      await write;
-    } finally {
-      if (pendingWrites.get(key) === write) pendingWrites.delete(key);
-    }
-  }
+  await appPersistence.persist(key, value);
 }

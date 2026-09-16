@@ -45,6 +45,8 @@ import BeadStudio from "./BeadStudio";
 import CountdownView from "./CountdownView";
 import DatePicker from "./DatePicker";
 import HomeDashboard from "./HomeDashboard";
+import SaveStatus from "./SaveStatus";
+import { taskDraftKey, notebookDraftKey, readTaskDraft } from "./editorDrafts";
 import MealPlanner from "./MealPlanner";
 import ShoppingList from "./ShoppingList";
 import WorkMonitorDashboard from "./WorkMonitorDashboard";
@@ -55,7 +57,8 @@ import MapSettings from "./life/MapSettings";
 import { emptyLife, isLifeData, lifeEvents, type LifeData } from "./life/model";
 import { loadLife } from "./life/store";
 import "./life/life.css";
-import { getAiSettings, saveAiSettings } from "./aiSettingsStore";
+import "./release.css";
+import { getAiSettings, saveAiSettings, testAiConnection } from "./aiSettingsStore";
 import type { AiSettings } from "./aiSettingsStore";
 import { APP_STATE_KEYS, bootstrapAppData, persistAppState } from "./appDataStore";
 import { exportDataBackup, restoreDataBackup, selectDataBackup } from "./backupStore";
@@ -90,7 +93,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.9.0";
+const FALLBACK_APP_VERSION = "0.9.1";
 
 const horizons: Array<{
   id: Horizon;
@@ -205,6 +208,7 @@ export default function App() {
   const [aiSettings, setAiSettings] = useState<AiSettings | null>(null);
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState(DEFAULT_AI_BASE_URL);
+  const [aiModel, setAiModel] = useState("gpt-5.6");
   const [showAiApiKey, setShowAiApiKey] = useState(false);
   const [aiSettingsBusy, setAiSettingsBusy] = useState(false);
   const [aiSettingsError, setAiSettingsError] = useState("");
@@ -214,22 +218,23 @@ export default function App() {
   const [countdowns, setCountdowns] = useState(loadCountdowns);
   const [selectedCountdownId, setSelectedCountdownId] = useState<string | null>(null);
   const [appDataReady, setAppDataReady] = useState(false);
+  const [appLoadError, setAppLoadError] = useState("");
   const [life, setLife] = useState<LifeData>(emptyLife);
   const lifeRef = useRef(life);
   lifeRef.current = life;
   const [lifeReady, setLifeReady] = useState(false);
   const [lifeError, setLifeError] = useState("");
-  const [lifeSaveError, setLifeSaveError] = useState("");
   const [lifeSelection, setLifeSelection] = useState<{id:string;date:string}|undefined>();
   const calendarLifeEvents = useMemo(()=>lifeEvents(life),[life]);
   function updateLife(update:(d:LifeData)=>LifeData) {
     const next=update(lifeRef.current);
     if(!isLifeData(next) || new TextEncoder().encode(JSON.stringify(next)).length > 2 * 1024 * 1024) {
       setToast("未保存：数据无效或超过 2 MB，请检查内容、减少路线数据后重试");
-      return;
+      return false;
     }
     lifeRef.current=next;
     setLife(next);
+    return true;
   }
   const [workOverview, setWorkOverview] = useState<WorkDashboard | null>(null);
   const [appVersion, setAppVersion] = useState(FALLBACK_APP_VERSION);
@@ -238,7 +243,7 @@ export default function App() {
   const [backupError, setBackupError] = useState("");
   const [toast, setToast] = useState("");
   const { fullscreen, busy: fullscreenBusy, toggle: toggleFullscreen } = useFullscreen(setToast);
-  const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, countdowns, reminderSettings);
+  const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, countdowns, reminderSettings, calendarLifeEvents, appDataReady && lifeReady && taskStoreReady);
 
   useEffect(()=>{
     if(!appDataReady)return;
@@ -246,9 +251,7 @@ export default function App() {
   },[appDataReady]);
   useEffect(()=>{
     if(!lifeReady)return;
-    let active=true;
-    void persistAppState(APP_STATE_KEYS.life,life).then(()=>{if(active)setLifeSaveError("");}).catch(()=>{if(active)setLifeSaveError("人物与生活计划保存失败，请重试保存或导出备份后重启");});
-    return()=>{active=false;};
+    void persistAppState(APP_STATE_KEYS.life,life).catch(()=>undefined);
   },[life,lifeReady]);
 
   useEffect(() => {
@@ -266,12 +269,10 @@ export default function App() {
         setMealPlan(loadMealPlan());
         setMealCheckedItems(loadMealCheckedItems());
         setCountdowns(loadCountdowns());
+        setAppDataReady(true);
       })
       .catch(() => {
-        if (active) setToast("生活数据暂时使用本地兼容存储");
-      })
-      .finally(() => {
-        if (active) setAppDataReady(true);
+        if (active) setAppLoadError("本机数据库读取失败，已暂停生活数据编辑以保护原数据。请检查磁盘空间后重新载入。");
       });
     return () => { active = false; };
   }, []);
@@ -283,6 +284,7 @@ export default function App() {
         if (!active) return;
         setAiSettings(settings);
         setAiBaseUrl(settings.baseUrl);
+        setAiModel(settings.model);
       })
       .catch(() => {
         if (active) setAiSettingsError("无法读取 AI 配置");
@@ -481,7 +483,7 @@ export default function App() {
   function openNewTask(horizon: Horizon, startDate = "") {
     setEditingId(null);
     setPendingOrigin(null);
-    setDraft({ ...emptyDraft, horizon, startDate });
+    setDraft(readTaskDraft(null, { ...emptyDraft, horizon, startDate }));
     setConfirmDelete(false);
     setEditorOpen(true);
   }
@@ -489,21 +491,35 @@ export default function App() {
   function openTask(task: Task) {
     setEditingId(task.id);
     setPendingOrigin(null);
-    setDraft({
+    setDraft(readTaskDraft(task.id, {
       title: task.title,
       notes: task.notes,
       horizon: task.horizon,
       priority: task.priority,
       startDate: task.startDate ?? "",
       dueDate: task.dueDate,
-    });
+    }));
     setConfirmDelete(false);
     setEditorOpen(true);
   }
 
   function openNotebook(task: Task) {
     setNotebookTaskId(task.id);
-    setNotebookNotes(task.notes);
+    setNotebookNotes(localStorage.getItem(notebookDraftKey(task.id)) ?? task.notes);
+  }
+
+  function changeTaskDraft(value: TaskDraft) {
+    if (taskBusy) return;
+    setDraft(value);
+    try { localStorage.setItem(taskDraftKey(editingId), JSON.stringify(value)); }
+    catch { setToast("任务草稿暂存失败，请保持窗口打开并尽快保存"); }
+  }
+  function changeNotebookNotes(value: string) {
+    if (notebookBusy) return;
+    setNotebookNotes(value);
+    if (!notebookTaskId) return;
+    try { localStorage.setItem(notebookDraftKey(notebookTaskId), value); }
+    catch { setToast("笔记草稿暂存失败，请保持窗口打开并尽快保存"); }
   }
 
   async function saveNotebook(event: React.FormEvent) {
@@ -521,6 +537,7 @@ export default function App() {
         dueDate: task.dueDate,
       });
       setTasks((current) => current.map((item) => item.id === task.id ? updated : item));
+      localStorage.removeItem(notebookDraftKey(task.id));
       setNotebookTaskId(null);
       setToast("事项笔记已保存");
     } catch {
@@ -547,6 +564,7 @@ export default function App() {
         setToast("计划已加入");
       }
       setPendingOrigin(null);
+      localStorage.removeItem(taskDraftKey(editingId));
       setEditorOpen(false);
     } catch {
       setToast("计划未保存，请稍后重试");
@@ -573,6 +591,8 @@ export default function App() {
     setTaskBusy(true);
     try {
       await deleteStoredTask(editingId);
+      localStorage.removeItem(taskDraftKey(editingId));
+      localStorage.removeItem(notebookDraftKey(editingId));
       setTasks((current) => current.filter((task) => task.id !== editingId));
       setEditorOpen(false);
       setToast("计划已删除");
@@ -642,9 +662,10 @@ export default function App() {
     setAiSettingsBusy(true);
     setAiSettingsError("");
     try {
-      const saved = await saveAiSettings(aiApiKey, aiBaseUrl, clearApiKey);
+      const saved = await saveAiSettings(aiApiKey, aiBaseUrl, clearApiKey, aiModel);
       setAiSettings(saved);
       setAiBaseUrl(saved.baseUrl);
+      setAiModel(saved.model);
       setAiApiKey("");
       setToast(clearApiKey ? "AI 密钥已清除" : "AI 服务配置已保存");
     } catch (error) {
@@ -684,7 +705,7 @@ export default function App() {
       const saved = await exportDataBackup();
       if (saved) setToast("数据备份已保存");
     } catch {
-      setBackupError("备份未导出，请重新选择保存位置");
+      setBackupError("备份未导出，请先确认顶部保存状态，再检查保存位置和磁盘空间");
     } finally {
       setBackupBusy(false);
     }
@@ -710,10 +731,9 @@ export default function App() {
     setBackupError("");
     try {
       await restoreDataBackup(pendingBackup);
-      setToast("数据已恢复，正在重新载入");
-      window.setTimeout(() => window.location.reload(), 500);
-    } catch {
-      setBackupError("备份恢复失败，当前数据没有改变");
+    } catch (error) {
+      const reason = String(error);
+      setBackupError(reason.includes("backup_snapshot_failed") ? "恢复已停止：无法创建当前数据的安全副本，请检查磁盘空间与目录权限。当前数据没有改变。" : reason.includes("backup_document_invalid") ? `恢复已停止：备份内的业务数据格式无效（${reason.split(":").at(-1)}）。当前数据没有改变。` : "备份恢复失败，请检查备份格式和顶部保存状态；当前数据没有改变");
       setBackupBusy(false);
     }
   }
@@ -821,6 +841,7 @@ export default function App() {
           <span className="brand-mark"><Check size={13} strokeWidth={3} /></span>
           <span>潮汐计划</span>
         </div>
+        <SaveStatus ready={appDataReady} />
         <div className="window-actions" onMouseDown={(event) => event.stopPropagation()}>
           <button
             className={alwaysOnTop ? "is-active" : ""}
@@ -912,9 +933,10 @@ export default function App() {
             </div>
           </section>
 
-          {lifeSaveError && <div role="alert" className="life-message">{lifeSaveError}<button className="secondary-button" onClick={()=>setLife(d=>({...d}))}>重试保存</button></div>}
-          {["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? (appDataReady ? <BeadStudio /> : <p role="status">正在读取图纸…</p>) : view === "overview" ? (
+          {!appDataReady ? <div role="status"><p>{appLoadError || "正在读取本机数据…"}</p>{appLoadError && <button className="secondary-button" onClick={() => window.location.reload()}>重新载入</button>}</div> : ["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? <BeadStudio /> : view === "overview" ? (
             <HomeDashboard
+              lifeEvents={calendarLifeEvents}
+              onOpenLife={event => { setLifeSelection({ id: event.targetId, date: event.date }); setView(event.kind === "training" ? "fitness" : "travel"); }}
               tasks={tasks}
               countdowns={countdowns}
               purchaseItems={allPurchaseItems}
@@ -1083,14 +1105,14 @@ export default function App() {
               )}
               <label className="form-field">
                 <span>计划名称</span>
-                <input autoFocus maxLength={200} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例如：整理本周工作重点" />
+                <input autoFocus maxLength={200} value={draft.title} onChange={(event) => changeTaskDraft({ ...draft, title: event.target.value })} placeholder="例如：整理本周工作重点" />
               </label>
 
               <fieldset className="form-field">
                 <legend>时间跨度</legend>
                 <div className="segmented-control">
                   {horizons.map((horizon) => (
-                    <button className={draft.horizon === horizon.id ? "active" : ""} type="button" key={horizon.id} onClick={() => setDraft({ ...draft, horizon: horizon.id })}>
+                    <button className={draft.horizon === horizon.id ? "active" : ""} type="button" key={horizon.id} onClick={() => changeTaskDraft({ ...draft, horizon: horizon.id })}>
                       {horizon.label}
                     </button>
                   ))}
@@ -1098,15 +1120,15 @@ export default function App() {
               </fieldset>
 
               <div className="form-row">
-                <DatePicker label="开始日期" value={draft.startDate} onChange={(startDate) => setDraft({ ...draft, startDate })} />
-                <DatePicker label="截止日期" value={draft.dueDate} onChange={(dueDate) => setDraft({ ...draft, dueDate })} />
+                <DatePicker label="开始日期" value={draft.startDate} onChange={(startDate) => changeTaskDraft({ ...draft, startDate })} />
+                <DatePicker label="截止日期" value={draft.dueDate} onChange={(dueDate) => changeTaskDraft({ ...draft, dueDate })} />
               </div>
               <div className="form-row form-row-single">
                 <fieldset className="form-field">
                   <legend>优先级</legend>
                   <div className="segmented-control priority-control">
-                    <button className={draft.priority === "normal" ? "active" : ""} type="button" onClick={() => setDraft({ ...draft, priority: "normal" })}>普通</button>
-                    <button className={draft.priority === "important" ? "active important" : ""} type="button" onClick={() => setDraft({ ...draft, priority: "important" })}>
+                    <button className={draft.priority === "normal" ? "active" : ""} type="button" onClick={() => changeTaskDraft({ ...draft, priority: "normal" })}>普通</button>
+                    <button className={draft.priority === "important" ? "active important" : ""} type="button" onClick={() => changeTaskDraft({ ...draft, priority: "important" })}>
                       <Flag size={13} />重要
                     </button>
                   </div>
@@ -1115,7 +1137,8 @@ export default function App() {
 
               <label className="form-field">
                 <span>记事本内容 <em>可选</em></span>
-                <textarea rows={3} maxLength={4000} value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} placeholder="记录和这件事有关的背景或思路……" />
+                <textarea rows={3} maxLength={4000} value={draft.notes} onChange={(event) => changeTaskDraft({ ...draft, notes: event.target.value })} placeholder="记录和这件事有关的背景或思路……" />
+                <small>编辑时暂存草稿。关闭或重启后，再打开此事项（新事项点击添加计划）可继续。</small>
               </label>
 
               <footer className="modal-actions">
@@ -1133,7 +1156,8 @@ export default function App() {
                   )
                 )}
                 <span className="action-spacer" />
-                <button className="secondary-button" type="button" onClick={() => setEditorOpen(false)}>取消</button>
+                <button className="secondary-button" type="button" disabled={taskBusy} onClick={() => { localStorage.removeItem(taskDraftKey(editingId)); setEditorOpen(false); }}>放弃草稿</button>
+                <button className="secondary-button" type="button" onClick={() => setEditorOpen(false)}>暂存并关闭</button>
                 <button className="primary-button" type="submit" disabled={!draft.title.trim() || taskBusy}>
                   <Check size={17} />保存计划
                 </button>
@@ -1159,14 +1183,16 @@ export default function App() {
               <label htmlFor="task-notebook">相关笔记</label>
               <textarea
                 id="task-notebook"
+                disabled={notebookBusy}
                 autoFocus
                 maxLength={4000}
                 value={notebookNotes}
-                onChange={(event) => setNotebookNotes(event.target.value)}
+                onChange={(event) => changeNotebookNotes(event.target.value)}
                 placeholder="记录背景、思路、资料位置或下一步……"
               />
               <footer>
                 <span>{notebookNotes.length} / 4000</span>
+                <button className="secondary-button" type="button" disabled={notebookBusy} onClick={() => { localStorage.removeItem(notebookDraftKey(notebookTask.id)); setNotebookNotes(notebookTask.notes); }}>放弃草稿</button>
                 <button className="secondary-button" type="button" onClick={() => setNotebookTaskId(null)}>取消</button>
                 <button className="primary-button" type="submit" disabled={notebookBusy}>
                   <Save size={16} />{notebookBusy ? "正在保存" : "保存笔记"}
@@ -1266,6 +1292,7 @@ export default function App() {
               </header>
               <form className="ai-settings-form" onSubmit={(event) => { event.preventDefault(); void persistAiSettings(); }}>
                 <div className="ai-settings-fields">
+                  <label><span>模型名称</span><input required maxLength={200} value={aiModel} onChange={e => setAiModel(e.target.value)} placeholder="填写服务商支持的模型标识" /></label>
                   <label>
                     <span>BASE_URL</span>
                     <input
@@ -1296,11 +1323,16 @@ export default function App() {
                 <footer>
                   <span>{aiSettingsError || "密钥保存在本机应用数据目录，仅当前用户可读取。"}</span>
                   <div>
+                    <button className="secondary-button" type="button" disabled={aiSettingsBusy || !aiSettings?.apiKeyConfigured} onClick={async () => {
+                      setAiSettingsBusy(true); setAiSettingsError("正在测试已保存的配置…");
+                      try { setAiSettingsError(await testAiConnection()); } catch (e) { setAiSettingsError(e instanceof Error ? e.message : String(e)); } finally { setAiSettingsBusy(false); }
+                    }}>测试已保存配置</button>
                     {aiSettings?.apiKeyConfigured && <button className="secondary-button" type="button" disabled={aiSettingsBusy} onClick={() => void persistAiSettings(true)}>清除密钥</button>}
                     <button className="primary-button" type="submit" disabled={aiSettingsBusy || !aiBaseUrl.trim()}><Save size={15} />保存 AI 配置</button>
                   </div>
                 </footer>
               </form>
+              <p>连接测试会发送不含个人资料的小型请求，可能消耗服务额度。先保存修改，再测试。</p>
             </section>
             <MapSettings />
             <section className="data-backup-section" aria-label="数据备份与恢复">
@@ -1315,7 +1347,7 @@ export default function App() {
               <div className="backup-actions">
                 <button className="secondary-button" type="button" onClick={() => void handleExportBackup()} disabled={backupBusy || !isTauri()}><Download size={15} />导出备份</button>
                 <button className="secondary-button" type="button" onClick={() => void handleSelectBackup()} disabled={backupBusy || !isTauri()}><Upload size={15} />选择备份</button>
-                <span>{isTauri() ? "恢复前会显示内容摘要，并由你再次确认。" : "请在桌面应用中使用备份功能。"}</span>
+                <span>{isTauri() ? "恢复前校验内容并自动备份现有数据；恢复成功后清除编辑草稿并重新载入。" : "请在桌面应用中使用备份功能。"}</span>
               </div>
               {pendingBackup && (
                 <div className="backup-confirm" role="alert">
@@ -1328,6 +1360,7 @@ export default function App() {
                 </div>
               )}
               {backupError && <p className="backup-error" role="alert">{backupError}</p>}
+              {sessionStorage.getItem("tideplan.restore-snapshot") && <p className="backup-error">上次恢复前的数据副本：{sessionStorage.getItem("tideplan.restore-snapshot")}</p>}
             </section>
             <div className="setting-note">
               <span className="brand-mark"><Check size={12} strokeWidth={3} /></span>

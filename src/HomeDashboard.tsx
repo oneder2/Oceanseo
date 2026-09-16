@@ -14,6 +14,7 @@ import {
 import { countdownDays } from "./countdownStore";
 import { dateFromKey, dateKey } from "./dateUtils";
 import type { WorkDashboard } from "./workMonitorStore";
+import { addDays, type LifeEvent } from "./life/model";
 import type { Countdown, MealPlan, PurchaseItem, ReminderSettings, Task, View } from "./types";
 
 interface HomeDashboardProps {
@@ -27,6 +28,8 @@ interface HomeDashboardProps {
   onOpenCountdown: (countdown: Countdown) => void;
   onNavigate: (view: View) => void;
   onNewTask: () => void;
+  lifeEvents: LifeEvent[];
+  onOpenLife: (event: LifeEvent) => void;
 }
 
 function compactDate(value: string) {
@@ -58,6 +61,8 @@ export default function HomeDashboard({
   onOpenCountdown,
   onNavigate,
   onNewTask,
+  lifeEvents,
+  onOpenLife,
 }: HomeDashboardProps) {
   const today = dateKey();
   const activeTasks = tasks.filter((task) => !task.completedAt);
@@ -66,13 +71,13 @@ export default function HomeDashboard({
     .sort((a, b) => {
       if (a.priority !== b.priority) return a.priority === "important" ? -1 : 1;
       return (a.dueDate || "9999-12-31").localeCompare(b.dueDate || "9999-12-31");
-    })
-    .slice(0, 5);
+    });
   const fallbackTasks = [...activeTasks]
     .filter((task) => !focusTasks.some((focus) => focus.id === task.id))
     .sort((a, b) => (a.dueDate || "9999-12-31").localeCompare(b.dueDate || "9999-12-31"))
     .slice(0, 3);
-  const displayedTasks = focusTasks.length ? focusTasks : fallbackTasks;
+  const displayedTasks = focusTasks.length ? focusTasks.slice(0, 5) : fallbackTasks;
+  const upcomingLife = lifeEvents.filter(e => e.date >= today && e.date <= addDays(today, 6)).sort((a,b) => a.date.localeCompare(b.date));
   const nearbyCountdowns = countdowns
     .map((countdown) => ({ countdown, days: countdownDays(countdown.targetDate) }))
     .filter(({ days }) => days >= 0)
@@ -143,6 +148,11 @@ export default function HomeDashboard({
         </section>
 
         <div className="home-side">
+          <section className="home-side-section">
+            <header className="home-section-head compact"><div><span>未来七天 · {upcomingLife.length} 项安排</span><h2>训练与旅行</h2></div><button onClick={() => onNavigate("calendar")}>日历<ArrowRight size={13}/></button></header>
+            {upcomingLife.slice(0, 3).map(event => <button key={`${event.kind}:${event.id}`} className="home-task-row" onClick={() => onOpenLife(event)}><span className="home-task-status">{event.done ? <CheckCircle2 size={16}/> : <CalendarClock size={16}/>}</span><span><strong>{event.title}</strong><small>{compactDate(event.date)} · {event.kind === "training" ? event.done ? "训练已完成" : "训练待清点" : "旅行安排"}</small></span><ArrowRight size={14}/></button>)}
+            {!upcomingLife.length && <p className="home-inline-empty">未来七天暂无训练或旅行安排。</p>}
+          </section>
           <section className="home-side-section home-dates">
             <header className="home-section-head compact">
               <div><span>时间标记</span><h2>临近日期</h2></div>

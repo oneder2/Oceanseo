@@ -1289,7 +1289,8 @@ pub async fn generate_work_report(
         return Err("work_scan_empty".to_string());
     }
     let body = json!({
-        "model": "gpt-5.6",
+        "model": ai.model,
+        "store": false,
         "input": [
             { "role": "system", "content": "你是个人软件项目复盘助手。只能依据给出的 Git 元数据判断，不能猜测源码内容。用简体中文总结，风险和下一步必须具体；只有里程碑、版本或显著功能变化才建议同步。公开亮点不得包含本地路径、提交哈希、凭据或私人信息，并同时给出简洁中英文。" },
             { "role": "user", "content": format!("请总结本次项目检查并逐项目给出判断。项目数据：{}", serde_json::to_string(&input).map_err(|_| "work_analysis_input_invalid")?) }

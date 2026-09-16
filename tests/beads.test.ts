@@ -207,3 +207,4 @@ test("physical dimensions distinguish occupied artwork from transparent margins"
   assert.equal(isPattern(JSON.parse(JSON.stringify(mini))), true);
   assert.equal(resizePattern(mini, 8, 8, false).beadPitchMm, 2.6);
 });
+import "./reliability.test";

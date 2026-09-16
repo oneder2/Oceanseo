@@ -546,12 +546,43 @@ impl TaskStore {
         })
     }
 
-    pub fn restore_backup(&self, backup: DataBackup) -> Result<(), String> {
+    pub fn restore_backup(&self, backup: DataBackup) -> Result<String, String> {
         validate_backup(&backup)?;
         let mut connection = self
             .connection
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
+        // Hold the same database lock across snapshot and restore so the recovery
+        // copy represents precisely the data about to be replaced.
+        let previous = DataBackup {
+            schema_version: BACKUP_SCHEMA_VERSION.to_string(),
+            created_at: now_timestamp(),
+            tasks: list_tasks_from_connection(&connection)?,
+            app_state: read_app_state(&connection)?,
+        };
+        fs::create_dir_all(&self.backup_dir).map_err(|_| "backup_snapshot_failed")?;
+        let snapshot = self
+            .backup_dir
+            .join(format!("before-restore-{}.json", Uuid::new_v4()));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&snapshot)
+            .map_err(|_| "backup_snapshot_failed")?;
+        use std::io::Write;
+        file.write_all(
+            &serde_json::to_vec_pretty(&previous).map_err(|_| "backup_snapshot_failed")?,
+        )
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "backup_snapshot_failed")?;
+        fs::File::open(&self.backup_dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|_| "backup_snapshot_failed")?;
         let transaction = connection
             .transaction()
             .map_err(|_| "backup_restore_transaction_failed".to_string())?;
@@ -582,7 +613,8 @@ impl TaskStore {
             .map_err(|_| "backup_state_restore_failed".to_string())?;
         transaction
             .commit()
-            .map_err(|_| "backup_restore_commit_failed".to_string())
+            .map_err(|_| "backup_restore_commit_failed".to_string())?;
+        Ok(snapshot.to_string_lossy().into_owned())
     }
 }
 
@@ -655,6 +687,9 @@ fn validate_backup(backup: &DataBackup) -> Result<(), String> {
     }
     for (key, value) in &backup.app_state {
         validate_app_state(key, value)?;
+        if !crate::backup_validation::valid(key, value) {
+            return Err(format!("backup_document_invalid:{key}"));
+        }
     }
     Ok(())
 }
@@ -981,7 +1016,7 @@ pub fn export_data_backup(store: tauri::State<'_, TaskStore>) -> Result<DataBack
 pub fn restore_data_backup(
     backup: DataBackup,
     store: tauri::State<'_, TaskStore>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     store.restore_backup(backup)
 }
 
@@ -1317,18 +1352,92 @@ mod tests {
     #[test]
     fn people_training_and_travel_survive_backup_and_restart() {
         let temp = TempDir::new().unwrap();
-        let document = serde_json::json!({"version":1,"people":[{"id":"p","name":"Test"}],
-            "training":[{"id":"f","personId":"p"}],"workouts":[{"id":"w","planId":"f","actual":{"e":[12,10,8]}}],
-            "trips":[{"id":"t","participantIds":["p"],"stops":[],"routes":[]}]});
+        let document = serde_json::json!({"version":1,
+            "people":[{"id":"p","name":"Test","birthday":"","relationship":"自己","dietary":"","preferences":"","hobbies":"","strengths":"","healthNotes":"","notes":"","archived":false}],
+            "training":[{"id":"f","personId":"p","title":"训练","startDate":"2026-09-16","intervalDays":2,"cycles":12,"goal":"","advice":"","archived":false,"exercises":[{"id":"e","name":"深蹲","unit":"次","sets":3,"reps":12}]}],
+            "workouts":[{"id":"w","planId":"f","date":"2026-09-16","notes":"","updatedAt":"2026-09-16T09:00:00Z","completed":true,"actual":{"e":[12,10,8]}}],
+            "trips":[{"id":"t","title":"旅行","origin":"上海","destination":"杭州","startDate":"2026-09-16","endDate":"2026-09-17","budget":3000,"purpose":"","preferences":"","transport":"","accommodation":"","summary":"","participantIds":["p"],"stops":[],"routes":[]}]});
         {
             let store = test_store(&temp);
-            store.set_app_state("tideplan.life.v1", document.clone()).unwrap();
+            store
+                .set_app_state("tideplan.life.v1", document.clone())
+                .unwrap();
             let backup = store.export_backup().unwrap();
             assert!(!backup.app_state.contains_key("map-settings"));
-            store.set_app_state("tideplan.life.v1", serde_json::Value::Null).unwrap();
+            store
+                .set_app_state("tideplan.life.v1", serde_json::Value::Null)
+                .unwrap();
             store.restore_backup(backup).unwrap();
         }
         let store = test_store(&temp);
-        assert_eq!(store.bootstrap_app_state(HashMap::new()).unwrap().get("tideplan.life.v1"), Some(&document));
+        assert_eq!(
+            store
+                .bootstrap_app_state(HashMap::new())
+                .unwrap()
+                .get("tideplan.life.v1"),
+            Some(&document)
+        );
+    }
+
+    #[test]
+    fn restore_saves_previous_data_and_rejects_corrupt_nested_documents() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let task = store
+            .create(mutation("Keep until validated", None))
+            .unwrap();
+        let mut backup = store.export_backup().unwrap();
+        let examples = [
+            (
+                "tideplan.life.v1",
+                serde_json::json!({"version":1,"people":[{"id":"p","name":"incomplete"}],"training":[],"trips":[],"workouts":[]}),
+            ),
+            (
+                "tideplan.meal-plan.v1",
+                serde_json::json!({"planTitle":"bad","weekSummary":"","days":[null],"shoppingList":[]}),
+            ),
+            (
+                "tideplan.bead-pattern.v1",
+                serde_json::json!({"version":1,"title":"bad","width":2,"height":1,"palette":[{"hex":"#ffffff","name":"white"}],"cells":[0,9]}),
+            ),
+            (
+                "tideplan.reminders.v1",
+                serde_json::json!({"enabled":true,"times":["99:00","19:00"]}),
+            ),
+        ];
+        for (key, value) in examples {
+            backup.app_state.clear();
+            backup.app_state.insert(key.into(), value);
+            assert!(store
+                .restore_backup(backup.clone())
+                .unwrap_err()
+                .starts_with("backup_document_invalid:"));
+            assert_eq!(store.list().unwrap().len(), 1);
+        }
+        backup.app_state.clear();
+        backup.tasks.clear();
+        let path = store.restore_backup(backup).unwrap();
+        assert!(store.list().unwrap().is_empty());
+        let previous: DataBackup =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(previous.tasks[0].id, task.id);
+        store.restore_backup(previous).unwrap();
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_safety_snapshot_prevents_restore() {
+        let temp = TempDir::new().unwrap();
+        let blocked = temp.path().join("not-a-directory");
+        fs::write(&blocked, "test").unwrap();
+        let store = TaskStore::open_for_test(&temp.path().join("tasks.db"), blocked).unwrap();
+        store.create(mutation("Keep me", None)).unwrap();
+        let mut backup = store.export_backup().unwrap();
+        backup.tasks.clear();
+        assert_eq!(
+            store.restore_backup(backup).unwrap_err(),
+            "backup_snapshot_failed"
+        );
+        assert_eq!(store.list().unwrap().len(), 1);
     }
 }

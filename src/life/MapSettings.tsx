@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import {
   getMapSettings,
   saveMapSettings,
+  searchPlaces,
+  mapRoute,
   type MapSettings as Summary,
 } from "./maps";
 import { errorText } from "./agent";
@@ -73,6 +75,46 @@ export default function MapSettings() {
           AI，也不进入数据备份。地图查询会把地点发送给高德；路线和价格需在出发前核实。
         </p>
         <div className="life-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy || !summary.configured}
+            onClick={async () => {
+              setBusy(true);
+              setMessage("正在测试地点检索和步行路线…");
+              try {
+                const places = await searchPlaces("杭州西湖", "杭州");
+                if (!places.length)
+                  throw Error(
+                    "服务可连接，但未找到测试地点，请检查地点检索权限",
+                  );
+                await mapRoute(
+                  {
+                    name: "测试起点",
+                    address: "杭州",
+                    lng: 120.1551,
+                    lat: 30.2741,
+                  },
+                  {
+                    name: "测试终点",
+                    address: "杭州",
+                    lng: 120.1581,
+                    lat: 30.2771,
+                  },
+                  "步行",
+                );
+                setMessage(
+                  "地点检索和步行路线测试通过；驾车权限及底图请在行程中另行验证",
+                );
+              } catch (e) {
+                setMessage(errorText(e));
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            测试已保存地图配置
+          </button>
           <button className="primary-button" disabled={busy}>
             保存地图配置
           </button>
@@ -87,6 +129,9 @@ export default function MapSettings() {
             </button>
           )}
         </div>
+        <p>
+          测试查询固定的杭州地点和路线，不发送人物资料，会使用地图服务额度。
+        </p>
         {message && <p role="status">{message}</p>}
       </form>
     </section>

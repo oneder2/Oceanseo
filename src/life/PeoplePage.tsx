@@ -10,7 +10,8 @@ import {
   validDate,
 } from "./model";
 import { Choice } from "./Fields";
-export type UpdateLife = (update: (data: LifeData) => LifeData) => void;
+import { useDraft, DraftNotice } from "../drafts";
+export type UpdateLife = (update: (data: LifeData) => LifeData) => boolean;
 const blank = (): Person => ({
   id: uid(),
   name: "",
@@ -31,11 +32,16 @@ export default function PeoplePage({
   data: LifeData;
   update: UpdateLife;
 }) {
-  const [draft, setDraft] = useState<Person>(() =>
-    data.people[0] ? { ...data.people[0] } : blank(),
+  const editor = useDraft<Person>(
+    "people",
+    () => (data.people[0] ? { ...data.people[0] } : blank()),
+    (p) => p.id,
+    (p) => data.people.find((saved) => saved.id === p.id) ?? blank(),
   );
+  const { value: draft, set: setDraft } = editor;
   const [search, setSearch] = useState(""),
     [archived, setArchived] = useState(false),
+    [confirmClear, setConfirmClear] = useState(false),
     [message, setMessage] = useState("");
   const info = birthdayInfo(draft.birthday);
   const field = (key: keyof Person, value: string) =>
@@ -53,16 +59,21 @@ export default function PeoplePage({
       return;
     }
     const person = { ...draft, name: draft.name.trim() };
-    update((d) => ({
-      ...d,
-      people: d.people.some((p) => p.id === person.id)
-        ? d.people.map((p) => (p.id === person.id ? person : p))
-        : [...d.people, person],
-    }));
-    setMessage("人物档案已保存");
+    if (
+      !update((d) => ({
+        ...d,
+        people: d.people.some((p) => p.id === person.id)
+          ? d.people.map((p) => (p.id === person.id ? person : p))
+          : [...d.people, person],
+      }))
+    )
+      return;
+    editor.clear();
+    setMessage("人物档案已提交，写入结果见顶部保存状态");
   }
   return (
     <section className="life-page people-page" aria-label="人物档案">
+      <DraftNotice draft={editor} label={(p) => p.name} />
       <div className="life-intro">
         <Users />
         <div>
@@ -75,7 +86,8 @@ export default function PeoplePage({
           <button
             className="primary-button"
             onClick={() => {
-              setDraft(blank());
+              editor.open(blank());
+              setConfirmClear(false);
               setMessage("");
             }}
           >
@@ -109,7 +121,8 @@ export default function PeoplePage({
                 className={`life-list-item ${p.id === draft.id ? "selected" : ""}`}
                 key={p.id}
                 onClick={() => {
-                  setDraft({ ...p });
+                  editor.open({ ...p });
+                  setConfirmClear(false);
                   setMessage("");
                 }}
               >
@@ -231,6 +244,62 @@ export default function PeoplePage({
             <p role="status" className="life-message">
               {message}
             </p>
+          )}
+          {data.people.some((p) => p.id === draft.id) && (
+            <div className="life-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setConfirmClear(!confirmClear)}
+              >
+                清除个人信息
+              </button>
+            </div>
+          )}
+          {confirmClear && (
+            <div className="life-message" role="alert">
+              <p>
+                清除这位人物的姓名、生日、偏好及全部档案备注，并归档为匿名人物。训练和旅行保留匿名关联。既有计划文本、AI
+                服务记录及导出的备份不会随之删除，需要单独检查。
+              </p>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => setConfirmClear(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => {
+                  const anonymous = {
+                    ...blank(),
+                    id: draft.id,
+                    name: "已清除档案的人物",
+                    relationship: "",
+                    archived: true,
+                  };
+                  if (
+                    !update((d) => ({
+                      ...d,
+                      people: d.people.map((p) =>
+                        p.id === draft.id ? anonymous : p,
+                      ),
+                    }))
+                  )
+                    return;
+                  editor.clear();
+                  editor.open(anonymous);
+                  setConfirmClear(false);
+                  setMessage(
+                    "个人档案信息已清除，历史计划保留匿名关联；写入结果见顶部",
+                  );
+                }}
+              >
+                确认清除个人信息
+              </button>
+            </div>
           )}
         </form>
       </div>

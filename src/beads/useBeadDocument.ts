@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
-import { APP_STATE_KEYS, persistAppState } from "../appDataStore";
+import { APP_STATE_KEYS, persistAppState, registerStateFlusher } from "../appDataStore";
 import { blankPattern, isPattern } from "./model";
 import { createDocument, documentReducer } from "./document";
 
@@ -25,20 +25,20 @@ export function useBeadDocument() {
   useEffect(() => {
     let active = true;
     setSaveStatus("正在保存…");
-    const timer = window.setTimeout(() => {
-      void persistAppState(APP_STATE_KEYS.beads, state.present)
+    void persistAppState(APP_STATE_KEYS.beads, state.present)
         .then(() => {
           if (active) setSaveStatus("已保存到本机");
         })
         .catch(() => {
           if (active) setSaveStatus("保存失败，本地副本已保留");
         });
-    }, 350);
     return () => {
       active = false;
-      window.clearTimeout(timer);
     };
   }, [state.present]);
+  useEffect(() => registerStateFlusher(() => {
+    void persistAppState(APP_STATE_KEYS.beads, latest.current).catch(() => undefined);
+  }), []);
   useEffect(
     () => () => {
       void persistAppState(APP_STATE_KEYS.beads, latest.current).catch(

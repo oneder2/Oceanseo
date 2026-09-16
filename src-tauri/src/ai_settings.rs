@@ -10,10 +10,14 @@ use std::{
 use url::Url;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+fn default_model() -> String {
+    "gpt-5.6".into()
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiSettingsSummary {
+    pub model: String,
     pub base_url: String,
     pub api_key_configured: bool,
     pub api_key_hint: Option<String>,
@@ -21,6 +25,7 @@ pub struct AiSettingsSummary {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAiSettings {
+    pub model: String,
     pub api_key: String,
     pub responses_url: Url,
 }
@@ -28,6 +33,8 @@ pub struct ResolvedAiSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredAiSettings {
+    #[serde(default = "default_model")]
+    model: String,
     api_key: String,
     base_url: String,
 }
@@ -35,6 +42,7 @@ struct StoredAiSettings {
 impl Default for StoredAiSettings {
     fn default() -> Self {
         Self {
+            model: default_model(),
             api_key: String::new(),
             base_url: DEFAULT_BASE_URL.to_string(),
         }
@@ -76,6 +84,7 @@ impl AiSettingsStore {
         api_key: Option<String>,
         base_url: String,
         clear_api_key: bool,
+        model: Option<String>,
     ) -> Result<AiSettingsSummary, String> {
         let base_url = normalize_base_url(&base_url)?;
         let mut settings = self
@@ -83,17 +92,26 @@ impl AiSettingsStore {
             .write()
             .map_err(|_| "ai_settings_lock_failed")?;
 
+        let mut candidate = settings.clone();
+        if let Some(model) = model {
+            let model = model.trim();
+            if model.is_empty() || model.len() > 200 || model.chars().any(char::is_whitespace) {
+                return Err("ai_model_invalid".into());
+            }
+            candidate.model = model.into();
+        }
         if clear_api_key {
-            settings.api_key.clear();
+            candidate.api_key.clear();
         } else if let Some(api_key) = api_key {
             let api_key = api_key.trim();
             if !api_key.is_empty() {
                 validate_api_key(api_key)?;
-                settings.api_key = api_key.to_string();
+                candidate.api_key = api_key.to_string();
             }
         }
-        settings.base_url = base_url;
-        persist_settings(&self.path, &settings)?;
+        candidate.base_url = base_url;
+        persist_settings(&self.path, &candidate)?;
+        *settings = candidate;
         Ok(summary_for(&settings))
     }
 
@@ -104,6 +122,7 @@ impl AiSettingsStore {
             .map_err(|_| "ai_settings_lock_failed")?;
         validate_api_key(&settings.api_key)?;
         Ok(ResolvedAiSettings {
+            model: settings.model.clone(),
             api_key: settings.api_key.clone(),
             responses_url: responses_url(&settings.base_url)?,
         })
@@ -167,6 +186,7 @@ fn summary_for(settings: &StoredAiSettings) -> AiSettingsSummary {
         Some(format!("····{suffix}"))
     };
     AiSettingsSummary {
+        model: settings.model.clone(),
         base_url: settings.base_url.clone(),
         api_key_configured: !api_key.is_empty(),
         api_key_hint,
@@ -208,9 +228,45 @@ pub fn save_ai_settings(
     api_key: Option<String>,
     base_url: String,
     clear_api_key: bool,
+    model: Option<String>,
     store: tauri::State<'_, AiSettingsStore>,
 ) -> Result<AiSettingsSummary, String> {
-    store.save(api_key, base_url, clear_api_key)
+    store.save(api_key, base_url, clear_api_key, model)
+}
+
+#[tauri::command]
+pub async fn test_ai_connection(
+    store: tauri::State<'_, AiSettingsStore>,
+) -> Result<String, String> {
+    test_connection(store.resolve()?).await
+}
+async fn test_connection(ai: ResolvedAiSettings) -> Result<String, String> {
+    let response = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build()
+        .map_err(|_| "无法初始化连接测试")?
+        .post(ai.responses_url).bearer_auth(ai.api_key).json(&serde_json::json!({
+            "model": ai.model, "store": false, "input": "Return ok: true. This is a connection test.",
+            "text": {"format": {"type": "json_schema", "name": "connection_test", "strict": true,
+                "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": false}}}
+        })).send().await.map_err(|_| "连接失败或超过 30 秒，请检查 BASE_URL 与网络")?;
+    if !response.status().is_success() {
+        return Err(match response.status().as_u16() {
+            401 | 403 => "密钥无效或无模型访问权限",
+            404 => "接口或模型不存在，请检查 BASE_URL 和模型名称",
+            429 => "请求限流或额度不足，请稍后重试",
+            _ => "服务请求失败，请确认支持 Responses 和 JSON Schema 结构化输出",
+        }
+        .into());
+    }
+    let body: serde_json::Value = response.json().await.map_err(|_| "返回内容不是有效 JSON")?;
+    let raw = crate::extract_output_text(&body).ok_or("服务未返回完整文本，请检查模型兼容性")?;
+    let result: serde_json::Value =
+        serde_json::from_str(raw).map_err(|_| "服务未返回结构化结果")?;
+    if result.get("ok") != Some(&serde_json::Value::Bool(true))
+        || result.as_object().map_or(0, |o| o.len()) != 1
+    {
+        return Err("结构化输出校验失败".into());
+    }
+    Ok("连接成功，当前模型支持本应用所需的结构化输出".into())
 }
 
 #[cfg(test)]
@@ -259,6 +315,7 @@ mod tests {
     #[test]
     fn public_summary_never_serializes_the_api_key() {
         let stored = StoredAiSettings {
+            model: default_model(),
             api_key: "very-secret-provider-key".into(),
             base_url: DEFAULT_BASE_URL.into(),
         };
@@ -277,6 +334,7 @@ mod tests {
                 Some("compatible-provider-key".into()),
                 "https://example.com/openai/v1/".into(),
                 false,
+                Some("custom-model".into()),
             )
             .unwrap();
         assert!(summary.api_key_configured);
@@ -289,10 +347,94 @@ mod tests {
         );
 
         let reloaded = AiSettingsStore::open(&path).unwrap().resolve().unwrap();
+        assert_eq!(reloaded.model, "custom-model");
         assert_eq!(reloaded.api_key, "compatible-provider-key");
         assert_eq!(
             reloaded.responses_url.as_str(),
             "https://example.com/openai/v1/responses"
         );
+    }
+
+    #[test]
+    fn old_configuration_gets_default_model_and_failed_save_keeps_live_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ai.json");
+        fs::write(
+            &path,
+            r#"{"apiKey":"test-only","baseUrl":"https://example.com/v1"}"#,
+        )
+        .unwrap();
+        let store = AiSettingsStore::open(&path).unwrap();
+        assert_eq!(store.summary().unwrap().model, default_model());
+        fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        assert!(store
+            .save(
+                Some("new-test-key".into()),
+                DEFAULT_BASE_URL.into(),
+                false,
+                Some("other".into())
+            )
+            .is_err());
+        assert_eq!(store.resolve().unwrap().api_key, "test-only");
+        assert_eq!(store.summary().unwrap().base_url, "https://example.com/v1");
+    }
+
+    #[test]
+    fn connection_test_uses_configured_model_and_checks_structured_output() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        for (status, output, success) in [
+            (200, r#"{"ok":true}"#, true),
+            (200, r#"{"wrong":true}"#, false),
+            (401, "", false),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    let n = socket.read(&mut buffer).unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|n| n.trim().parse::<usize>().ok())
+                            })
+                            .unwrap();
+                        if bytes.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                assert!(request.starts_with("POST /v1/responses"));
+                assert!(request.contains("\"model\":\"test-model\""));
+                assert!(request.contains("\"strict\":true"));
+                let body = serde_json::json!({"output":[{"type":"message","content":[{"type":"output_text","text":output}]}]}).to_string();
+                write!(socket, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            let ai = ResolvedAiSettings {
+                model: "test-model".into(),
+                api_key: "test-only-key".into(),
+                responses_url: Url::parse(&format!("http://{address}/v1/responses")).unwrap(),
+            };
+            assert_eq!(
+                tauri::async_runtime::block_on(test_connection(ai)).is_ok(),
+                success
+            );
+            server.join().unwrap();
+        }
     }
 }

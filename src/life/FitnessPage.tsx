@@ -15,6 +15,7 @@ import {
 import type { UpdateLife } from "./PeoplePage";
 import { Choice } from "./Fields";
 import { reviewResult, runAgent, trainingResult, useJob } from "./agent";
+import { useDraft, DraftNotice } from "../drafts";
 const blank = (): TrainingPlan => ({
   id: uid(),
   title: "我的训练计划",
@@ -50,15 +51,25 @@ export default function FitnessPage({
             initialDates.at(-1) ??
             dateKey()),
     );
-  const [draft, setDraft] = useState(blank),
-    [editing, setEditing] = useState(!data.training.length),
+  const editor = useDraft("training", blank, (p) => p.id);
+  const { value: draft, set: setDraft } = editor;
+  const [editing, setEditing] = useState(editor.dirty || !data.training.length),
     [message, setMessage] = useState("");
-  const [actual, setActual] = useState<Record<string, number[]>>({}),
-    [notes, setNotes] = useState(""),
-    [review, setReview] = useState("");
+  const [review, setReview] = useState("");
   const job = useJob();
   const plan = data.training.find((p) => p.id === active),
     record = data.workouts.find((w) => w.planId === active && w.date === date);
+  const recording = useDraft(`workout:${active}:${date}`, () => ({
+    actual: record?.actual ?? ({} as Record<string, number[]>),
+    notes: record?.notes ?? "",
+  }));
+  const { actual, notes } = recording.value;
+  const setActual = (action: React.SetStateAction<Record<string, number[]>>) =>
+    recording.set((v) => ({
+      ...v,
+      actual: typeof action === "function" ? action(v.actual) : action,
+    }));
+  const setNotes = (notes: string) => recording.set((v) => ({ ...v, notes }));
   const dates = plan ? trainingDates(plan) : [],
     stats = plan ? trainingStats(plan, data.workouts) : null;
   useEffect(() => {
@@ -69,8 +80,6 @@ export default function FitnessPage({
     }
   }, [selected]);
   useEffect(() => {
-    setActual(record?.actual ?? {});
-    setNotes(record?.notes ?? "");
     setReview(plan?.review ?? "");
   }, [active, date, record, plan?.review]);
   function choose(p: TrainingPlan) {
@@ -88,16 +97,20 @@ export default function FitnessPage({
       setMessage(error);
       return;
     }
-    update((d) => ({
-      ...d,
-      training: d.training.some((p) => p.id === draft.id)
-        ? d.training.map((p) => (p.id === draft.id ? draft : p))
-        : [...d.training, draft],
-    }));
+    if (
+      !update((d) => ({
+        ...d,
+        training: d.training.some((p) => p.id === draft.id)
+          ? d.training.map((p) => (p.id === draft.id ? draft : p))
+          : [...d.training, draft],
+      }))
+    )
+      return;
+    editor.clear();
     setActive(draft.id);
     setDate(draft.startDate);
     setEditing(false);
-    setMessage("计划已保存并显示在日历中");
+    setMessage("计划已提交并同步日历，写入结果见顶部保存状态");
   }
   function saveRecord(completed: boolean) {
     if (!dates.includes(date)) {
@@ -128,22 +141,40 @@ export default function FitnessPage({
       completed,
       updatedAt: new Date().toISOString(),
     };
-    update((d) => ({
-      ...d,
-      training: d.training.map((p) =>
-        p.id === plan.id ? { ...p, review: undefined } : p,
-      ),
-      workouts: [
-        ...d.workouts.filter((r) => !(r.planId === plan.id && r.date === date)),
-        w,
-      ],
-    }));
+    if (
+      !update((d) => ({
+        ...d,
+        training: d.training.map((p) =>
+          p.id === plan.id ? { ...p, review: undefined } : p,
+        ),
+        workouts: [
+          ...d.workouts.filter(
+            (r) => !(r.planId === plan.id && r.date === date),
+          ),
+          w,
+        ],
+      }))
+    )
+      return;
+    recording.clear();
     setMessage(
-      completed ? "已标记完成，日历同步更新" : "记录已保存，当前未标记完成",
+      completed
+        ? "已标记完成，写入结果见顶部保存状态"
+        : "记录已提交，当前未标记完成；写入结果见顶部",
     );
   }
   return (
     <section className="life-page" aria-label="训练计划">
+      {editing ? (
+        <DraftNotice draft={editor} label={(p) => p.title} />
+      ) : (
+        <DraftNotice draft={recording} />
+      )}
+      {!editing && editor.entries.length > 0 && (
+        <button className="secondary-button" onClick={() => setEditing(true)}>
+          继续编辑训练草稿
+        </button>
+      )}
       <div className="life-intro">
         <Dumbbell />
         <div>
@@ -160,7 +191,7 @@ export default function FitnessPage({
             className="primary-button"
             onClick={() => {
               job.cancel();
-              setDraft(blank());
+              editor.open(blank());
               setEditing(true);
               setMessage("");
             }}

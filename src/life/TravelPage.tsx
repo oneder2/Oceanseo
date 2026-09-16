@@ -18,6 +18,7 @@ import type { UpdateLife } from "./PeoplePage";
 import { Choice, PeoplePicker } from "./Fields";
 import { runAgent, travelResult, useJob } from "./agent";
 import { mapRoute, searchPlaces } from "./maps";
+import { useDraft, DraftNotice } from "../drafts";
 const TripMap = lazy(() => import("./TripMap"));
 const blank = (): Trip => ({
   id: uid(),
@@ -47,10 +48,14 @@ export default function TravelPage({
   selected?: { id: string; date: string };
   onSettings: () => void;
 }) {
-  const [trip, setTrip] = useState<Trip>(
+  const editor = useDraft<Trip>(
+    "travel",
     () =>
       data.trips.find((t) => t.id === selected?.id) ?? data.trips[0] ?? blank(),
+    (t) => t.id,
+    (t) => data.trips.find((saved) => saved.id === t.id) ?? blank(),
   );
+  const { value: trip, set: setTrip } = editor;
   const [day, setDay] = useState(
       selected?.id === trip.id ? selected.date : trip.startDate,
     ),
@@ -66,7 +71,7 @@ export default function TravelPage({
     if (selected) {
       const t = data.trips.find((t) => t.id === selected.id);
       if (t) {
-        setTrip(t);
+        editor.open(t);
         setDay(selected.date);
       }
     }
@@ -114,13 +119,17 @@ export default function TravelPage({
       setMessage(err);
       return;
     }
-    update((d) => ({
-      ...d,
-      trips: d.trips.some((t) => t.id === trip.id)
-        ? d.trips.map((t) => (t.id === trip.id ? trip : t))
-        : [...d.trips, trip],
-    }));
-    setMessage("行程已保存，旅行日期已加入日历");
+    if (
+      !update((d) => ({
+        ...d,
+        trips: d.trips.some((t) => t.id === trip.id)
+          ? d.trips.map((t) => (t.id === trip.id ? trip : t))
+          : [...d.trips, trip],
+      }))
+    )
+      return;
+    editor.clear();
+    setMessage("行程已提交并同步日历，写入结果见顶部保存状态");
   }
   async function generate() {
     const error = tripError({ ...trip, stops: [] });
@@ -191,6 +200,7 @@ export default function TravelPage({
   }
   return (
     <section className="life-page travel-page" aria-label="旅行规划">
+      <DraftNotice draft={editor} label={(t) => t.title} />
       <div className="life-intro">
         <MapPin />
         <div>
@@ -213,7 +223,7 @@ export default function TravelPage({
             onChange={(e) => {
               const t = data.trips.find((t) => t.id === e.target.value);
               if (t) {
-                setTrip(t);
+                editor.open(t);
                 setDay(t.startDate);
                 setMatches(null);
                 setMessage("");
@@ -234,7 +244,7 @@ export default function TravelPage({
           disabled={job.busy}
           onClick={() => {
             const t = blank();
-            setTrip(t);
+            editor.open(t);
             setDay(t.startDate);
             setMatches(null);
             setMessage("");
@@ -267,8 +277,9 @@ export default function TravelPage({
                 ...d,
                 trips: d.trips.filter((t) => t.id !== trip.id),
               }));
+              editor.clear();
               const t = blank();
-              setTrip(t);
+              editor.open(t);
               setDay(t.startDate);
               setConfirmDelete(false);
             }}

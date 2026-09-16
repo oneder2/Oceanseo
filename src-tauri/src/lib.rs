@@ -9,11 +9,12 @@ use tauri::{
 use tauri_plugin_deep_link::DeepLinkExt;
 
 mod ai_settings;
+mod backup_validation;
 mod deep_links;
+mod maps;
+mod planning;
 mod tasks;
 mod work_monitor;
-mod planning;
-mod maps;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,7 +178,8 @@ async fn generate_meal_plan(
     );
 
     let request_body = json!({
-        "model": "gpt-5.6",
+        "model": ai.model,
+        "store": false,
         "input": [
             {
                 "role": "system",
@@ -261,6 +263,7 @@ pub fn run() {
             maps::plan_map_route,
             ai_settings::get_ai_settings,
             ai_settings::save_ai_settings,
+            ai_settings::test_ai_connection,
             tasks::list_tasks,
             tasks::get_task,
             tasks::create_task,
@@ -289,7 +292,10 @@ pub fn run() {
                 ai_settings::AiSettingsStore::open(&app_data_dir.join("ai-settings.json"))
                     .map_err(std::io::Error::other)?;
             app.manage(ai_settings_store);
-            app.manage(maps::MapStore::open(&app_data_dir.join("map-settings.json")).map_err(std::io::Error::other)?);
+            app.manage(
+                maps::MapStore::open(&app_data_dir.join("map-settings.json"))
+                    .map_err(std::io::Error::other)?,
+            );
             let task_store = tasks::TaskStore::open(&app_data_dir.join("oceanseo-tasks.sqlite3"))
                 .map_err(std::io::Error::other)?;
             app.manage(task_store);
