@@ -208,3 +208,4 @@ test("physical dimensions distinguish occupied artwork from transparent margins"
   assert.equal(resizePattern(mini, 8, 8, false).beadPitchMm, 2.6);
 });
 import "./reliability.test";
+import "./bead-quality.test";

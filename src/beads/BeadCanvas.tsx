@@ -255,7 +255,7 @@ export default function BeadCanvas({
       <footer className="bead-canvas-footer">
         <span>
           {hover
-            ? `X ${hover.x + 1} · Y ${hover.y + 1} · ${pattern.cells[hover.y * pattern.width + hover.x] < 0 ? "空白" : colorCode(pattern.cells[hover.y * pattern.width + hover.x])}`
+            ? `X ${hover.x + 1} · Y ${hover.y + 1} · ${pattern.cells[hover.y * pattern.width + hover.x] < 0 ? "空白" : colorCode(pattern.cells[hover.y * pattern.width + hover.x], pattern)}`
             : "左上角 (1,1) · 滚轮缩放 / 中键拖动"}
         </span>
         <div>

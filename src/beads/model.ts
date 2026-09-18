@@ -1,6 +1,10 @@
+import { validColorIdentity, type BeadBrand } from "./palettes";
 export interface BeadColor {
   hex: string;
   name: string;
+  brand?: BeadBrand;
+  code?: string;
+  catalog?: string;
 }
 export interface BeadPattern {
   version: 1;
@@ -52,7 +56,8 @@ export function isPattern(value: unknown): value is BeadPattern {
         c &&
         /^#[0-9a-f]{6}$/i.test(c.hex) &&
         typeof c.name === "string" &&
-        c.name.length <= 40,
+        c.name.length <= 40 &&
+        validColorIdentity(c),
     ) &&
     Array.isArray(p.cells) &&
     p.cells.length === p.width * p.height &&
@@ -76,8 +81,17 @@ export function resizePattern(
   });
   return { ...p, width, height, cells };
 }
-export function colorCode(index: number) {
-  return `B${String(index + 1).padStart(2, "0")}`;
+export function colorCode(index: number, pattern?: BeadPattern) {
+  const color = pattern?.palette[index];
+  if (
+    color?.brand &&
+    pattern?.palette.some((c) => c.brand && c.brand !== color.brand)
+  )
+    return `${color.brand}:${color.code}`;
+  return (
+    pattern?.palette[index]?.code ??
+    `${pattern?.palette.some((c) => c.brand) ? "U" : "B"}${String(index + 1).padStart(2, "0")}`
+  );
 }
 export function counts(p: BeadPattern) {
   const values = p.palette.map(() => 0);

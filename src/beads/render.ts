@@ -6,6 +6,7 @@ import {
   formatCm,
   type BeadPattern,
 } from "./model";
+import { paletteDescription } from "./palettes";
 export function drawPattern(
   ctx: CanvasRenderingContext2D,
   p: BeadPattern,
@@ -34,7 +35,7 @@ export function drawPattern(
       if (color && labels && cell >= 18) {
         ctx.fillStyle = ink(color.hex);
         ctx.fillText(
-          colorCode(index),
+          colorCode(index, p),
           ox + (x + 0.5) * cell,
           oy + (y + 0.5) * cell,
           cell - 2,
@@ -143,7 +144,7 @@ export function exportCanvas(p: BeadPattern) {
   ctx.textAlign = "left";
   ctx.fillStyle = "#263b46";
   ctx.font = "bold 18px sans-serif";
-  ctx.fillText("用色清单 · 应用内编号，请核对实体豆颜色", 48, legendY);
+  ctx.fillText(`用色清单 · ${paletteDescription(p)}`, 48, legendY, width - 96);
   used.forEach(({ n, i }, k) => {
     const x = 48 + (k % columns) * 270,
       y = legendY + 28 + Math.floor(k / columns) * 42;
@@ -154,7 +155,7 @@ export function exportCanvas(p: BeadPattern) {
     ctx.fillStyle = "#263b46";
     ctx.font = "13px sans-serif";
     ctx.fillText(
-      `${colorCode(i)} ${p.palette[i].name} · ${n} 颗`,
+      `${colorCode(i, p)} ${p.palette[i].brand ?? p.palette[i].name} · ${n} 颗`,
       x + 35,
       y,
       220,
@@ -165,7 +166,7 @@ export function exportCanvas(p: BeadPattern) {
   ctx.fillStyle = "#657984";
   ctx.font = "13px sans-serif";
   ctx.fillText(
-    "空白格不放豆 · 边缘描线为阅读辅助 · 尺寸为估算 · PNG 非 1:1 打印模板",
+    "社区色表 / 屏幕近似色，请核对实物 · 空白不放豆 · 尺寸为估算 · PNG 非 1:1 模板",
     48,
     height - 28,
     width - 96,

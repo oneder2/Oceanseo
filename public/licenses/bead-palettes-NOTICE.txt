@@ -1,0 +1,22 @@
+Bead palette data attribution
+
+Source: Zippland/perler-beads
+Copyright 2024 Zippland
+Revision: 2519daf1628534e414bc7a10f0472dc32000bde4
+File: src/app/colorSystemMapping.json
+https://github.com/Zippland/perler-beads/blob/2519daf1628534e414bc7a10f0472dc32000bde4/src/app/colorSystemMapping.json
+
+Used under Apache License 2.0 from that historical revision. The license
+from that revision is included in bead-palettes-Apache-2.0.txt. The upstream
+project's current license may differ; no later data revision is included.
+
+Tideplan modifications: JSON formatting; runtime subset restricted to MARD
+series A-H and M (221 common opaque colors), retaining the corresponding
+codes for MARD, COCO, 漫漫, 盼盼 and 咪小窝. RGB values and code mappings
+are unchanged. Special-effect series are excluded from automatic matching.
+
+This is a community-maintained cross-reference, not an official manufacturer
+colorimetric standard or proof of physical equivalence across brands.
+Display colors approximate real beads. Verify product size, series, code,
+availability and actual color with the manufacturer before purchasing.
+Brand names identify compatible catalogs; no endorsement is implied.

@@ -19,6 +19,7 @@ export function useImageImport(
     mode: "photo",
     colors: 16,
     cleanup: 1,
+    brand: "MARD",
   });
   const [lockRatio, setLockRatio] = useState(true);
   const sourceRef = useRef(source),
@@ -121,25 +122,11 @@ export function useImageImport(
     notify("正在转换图片，可随时取消…");
     try {
       const surface = document.createElement("canvas");
-      surface.width = options.width;
-      surface.height = options.height;
+      surface.width = source.image.width;
+      surface.height = source.image.height;
       const ctx = surface.getContext("2d", { willReadFrequently: true });
       if (!ctx) throw new Error("无法读取图片像素");
-      ctx.imageSmoothingEnabled = options.mode === "photo";
-      ctx.imageSmoothingQuality = "high";
-      const ratio = Math.min(
-        surface.width / source.image.width,
-        surface.height / source.image.height,
-      );
-      const w = source.image.width * ratio,
-        h = source.image.height * ratio;
-      ctx.drawImage(
-        source.image,
-        (surface.width - w) / 2,
-        (surface.height - h) / 2,
-        w,
-        h,
-      );
+      ctx.drawImage(source.image, 0, 0);
       const data = ctx.getImageData(0, 0, surface.width, surface.height).data;
       const running = new Worker(
         new URL("./convert.worker.ts", import.meta.url),
@@ -165,7 +152,15 @@ export function useImageImport(
         setBusy(false);
         notify("转换未完成，请缩小尺寸后重试");
       };
-      running.postMessage({ data, options }, [data.buffer]);
+      running.postMessage(
+        {
+          data,
+          sourceWidth: surface.width,
+          sourceHeight: surface.height,
+          options,
+        },
+        [data.buffer],
+      );
     } catch (e) {
       worker.current?.terminate();
       worker.current = null;

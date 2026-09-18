@@ -21,7 +21,7 @@ export default function ShapePanel({
     <div className="bead-panel-content">
       <div className="bead-current-color">
         <i style={{ background: pattern.palette[color].hex }} />
-        使用 {colorCode(color)} · {pattern.palette[color].name}
+        使用 {colorCode(color, pattern)} · {pattern.palette[color].name}
       </div>
       <h3>封闭空洞</h3>
       <p className="bead-help">
@@ -34,7 +34,7 @@ export default function ShapePanel({
           propose({
             label: "填充空心",
             after: fillHoles(pattern, color),
-            message: `使用 ${colorCode(color)} 填充所有封闭空洞。上下左右与画布边缘相通的空白会保留。`,
+            message: `使用 ${colorCode(color, pattern)} 填充所有封闭空洞。上下左右与画布边缘相通的空白会保留。`,
           })
         }
       >
@@ -75,7 +75,7 @@ export default function ShapePanel({
             propose({
               label: "轮廓加厚",
               after: thickenOutline(pattern, color, layers, expand),
-              message: `使用 ${colorCode(color)} 向外增加 ${layers} 层。${expand ? "触边处自动扩展，原图案坐标可能整体平移。" : "仅在现有画布内增加。"}原有豆和内孔保持不变。`,
+              message: `使用 ${colorCode(color, pattern)} 向外增加 ${layers} 层。${expand ? "触边处自动扩展，原图案坐标可能整体平移。" : "仅在现有画布内增加。"}原有豆和内孔保持不变。`,
             });
           } catch (e) {
             notify(e instanceof Error ? e.message : "加边失败");

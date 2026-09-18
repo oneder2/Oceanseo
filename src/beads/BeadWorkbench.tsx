@@ -217,7 +217,10 @@ export default function BeadWorkbench() {
       onKeyDown={(e) => {
         if ((e.target as HTMLElement).closest('[aria-modal="true"]')) {
           // Browser undo can otherwise edit a previously focused input behind the dialog.
-          if ((e.ctrlKey || e.metaKey) && ["z", "y"].includes(e.key.toLowerCase()))
+          if (
+            (e.ctrlKey || e.metaKey) &&
+            ["z", "y"].includes(e.key.toLowerCase())
+          )
             e.preventDefault();
           return;
         }
@@ -335,11 +338,11 @@ export default function BeadWorkbench() {
         </div>
         <button
           className="bead-current-swatch"
-          aria-label={`当前豆色 ${colorCode(color)}，打开豆色面板`}
+          aria-label={`当前豆色 ${colorCode(color, pattern)}，打开豆色面板`}
           onClick={() => openPanel("colors")}
         >
           <i style={{ background: pattern.palette[color].hex }} />
-          <strong>{colorCode(color)}</strong>
+          <strong>{colorCode(color, pattern)}</strong>
           <span>{tally[color]} 颗</span>
         </button>
       </div>
@@ -371,13 +374,15 @@ export default function BeadWorkbench() {
           onPick={(index) => {
             setSelection(index);
             setPanel("colors");
-            notify(`已选中 ${colorCode(index)}；按 B 或选择画笔开始绘制`);
+            notify(
+              `已选中 ${colorCode(index, pattern)}；按 B 或选择画笔开始绘制`,
+            );
           }}
           onFill={(point) =>
             propose({
               label: "区域填充",
               after: floodFill(pattern, point.x, point.y, color),
-              message: `用 ${colorCode(color)} 替换点击位置上下左右相连的同色区域。`,
+              message: `用 ${colorCode(color, pattern)} 替换点击位置上下左右相连的同色区域。`,
             })
           }
         />
@@ -424,6 +429,7 @@ export default function BeadWorkbench() {
                   closePanel();
                   focusCanvas();
                 }}
+                propose={propose}
               />
             </fieldset>
             <div hidden={panel !== "import"} id="bead-panel-import">

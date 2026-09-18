@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { validSize } from "./model";
+import { BRANDS, PALETTE_NOTICE, type BeadBrand } from "./palettes";
 import type { useImageImport } from "./useImageImport";
 
 export default function ImportPanel({
@@ -61,9 +62,33 @@ export default function ImportPanel({
             }}
           >
             <option value="photo">照片转图 · 精简配色</option>
-            <option value="pixel">像素原稿 · 保留原色</option>
+            <option value="pixel">像素原稿 · 保留像素结构</option>
           </select>
         </label>
+        <label>
+          拼豆品牌
+          <select
+            value={options.brand ?? "custom"}
+            onChange={(e) =>
+              setOptions((o) => ({
+                ...o,
+                brand: e.target.value as BeadBrand | "custom",
+              }))
+            }
+          >
+            {BRANDS.map((brand) => (
+              <option key={brand} value={brand}>
+                {brand} · 221 色
+              </option>
+            ))}
+            <option value="custom">自定义原色 · 非厂家色号</option>
+          </select>
+        </label>
+        <p className="bead-help">
+          {options.brand && options.brand !== "custom"
+            ? PALETTE_NOTICE
+            : "保留图片配色，使用图纸内部 B 编号。"}
+        </p>
         <div className="bead-fields">
           <label>
             解析宽度
@@ -131,7 +156,8 @@ export default function ImportPanel({
           </>
         ) : (
           <p className="bead-help">
-            每个像素对应一颗豆。放大过的像素画需填写原始格数；透明处留空，不识别图片中的网格和文字。
+            每个像素对应一颗豆，不做降噪。选择品牌后会匹配该品牌近似色；选择自定义原色可保留原始
+            RGB。放大过的像素画需填写原始格数；透明处留空，不识别网格和文字。
           </p>
         )}
         <button

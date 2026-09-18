@@ -84,7 +84,7 @@ export default function ColorLocator({
           <div className="bead-locator-head">
             <span className="bead-locator-label">同色定位</span>
             <strong>
-              {colorCode(color)} <span>{count} 颗</span>
+              {colorCode(color, pattern)} <span>{count} 颗</span>
             </strong>
           </div>
           <p>
@@ -106,7 +106,7 @@ export default function ColorLocator({
           ref={ref}
           width={720}
           height={480}
-          aria-label={`${colorCode(color)} 全图分布，共 ${count} 颗。紫色为当前豆色的位置，不是图案原色。`}
+          aria-label={`${colorCode(color, pattern)} 全图分布，共 ${count} 颗。紫色为当前豆色的位置，不是图案原色。`}
         />
       </section>
     </>

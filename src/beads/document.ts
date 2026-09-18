@@ -30,7 +30,12 @@ export function samePattern(a: BeadPattern, b: BeadPattern) {
       (a.beadPitchMm ?? 5) === (b.beadPitchMm ?? 5) &&
       a.palette.length === b.palette.length &&
       a.palette.every(
-        (c, i) => c.hex === b.palette[i].hex && c.name === b.palette[i].name,
+        (c, i) =>
+          c.hex === b.palette[i].hex &&
+          c.name === b.palette[i].name &&
+          c.brand === b.palette[i].brand &&
+          c.code === b.palette[i].code &&
+          c.catalog === b.palette[i].catalog,
       ) &&
       a.cells.length === b.cells.length &&
       a.cells.every((c, i) => c === b.cells[i]))

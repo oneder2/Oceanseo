@@ -2,6 +2,37 @@
 use chrono::NaiveDate;
 use serde_json::Value;
 use std::collections::HashSet;
+fn bead_identity(c: &Value) -> bool {
+    if ["brand", "code", "catalog"]
+        .iter()
+        .all(|k| c.get(*k).is_none())
+    {
+        return true;
+    }
+    let Some(brand) = c["brand"].as_str() else {
+        return false;
+    };
+    if !["MARD", "COCO", "漫漫", "盼盼", "咪小窝"].contains(&brand)
+        || c["catalog"] != "zippland-2519daf-regular"
+    {
+        return false;
+    }
+    static CATALOG: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    let catalog = CATALOG.get_or_init(|| {
+        serde_json::from_str(include_str!("../../src/beads/palettes/catalog.json"))
+            .expect("bundled bead catalog")
+    });
+    catalog.as_object().unwrap().iter().any(|(hex, row)| {
+        let code = row["MARD"].as_str().unwrap_or("");
+        matches!(code.as_bytes().first(), Some(b'A'..=b'H' | b'M'))
+            && code.len() > 1
+            && code[1..].bytes().all(|c| c.is_ascii_digit())
+            && row[brand] == c["code"]
+            && c["hex"]
+                .as_str()
+                .is_some_and(|value| value.eq_ignore_ascii_case(hex))
+    })
+}
 fn strings(v: &Value, keys: &[&str]) -> bool {
     keys.iter().all(|k| {
         v[*k]
@@ -207,7 +238,8 @@ pub fn valid(key: &str, v: &Value) -> bool {
                     && (v.get("beadPitchMm").is_none() || number(&v["beadPitchMm"], 0.5, 20.))
                     && v["palette"].as_array().is_some_and(|a| !a.is_empty())
                     && list(&v["palette"], 256, |c| {
-                        strings(c, &["name"])
+                        bead_identity(c)
+                            && strings(c, &["name"])
                             && c["name"]
                                 .as_str()
                                 .is_some_and(|s| s.encode_utf16().count() <= 40)
@@ -230,5 +262,22 @@ pub fn valid(key: &str, v: &Value) -> bool {
                     }))
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod bead_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn branded_beads_restore_only_with_matching_catalog_identity() {
+        let mut p = json!({"version":1,"title":"test","width":1,"height":1,"cells":[0],"palette":[{"hex":"#faf4c8","name":"MARD","brand":"MARD","code":"A01","catalog":"zippland-2519daf-regular"}]});
+        assert!(valid("tideplan.bead-pattern.v1", &p));
+        p["palette"][0]["code"] = json!("A99");
+        assert!(!valid("tideplan.bead-pattern.v1", &p));
+        p["palette"][0] = json!({"hex":"#faf4c8","name":"legacy"});
+        assert!(valid("tideplan.bead-pattern.v1", &p));
+        p["palette"][0]["brand"] = json!("MARD");
+        assert!(!valid("tideplan.bead-pattern.v1", &p));
     }
 }

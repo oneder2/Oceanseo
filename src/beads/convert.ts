@@ -1,4 +1,14 @@
 import { MAX_COLORS, validSize, type BeadPattern } from "./model";
+import { distance, lab, smoothPhoto, regularizeLabels } from "./denoise";
+import { colorDistance } from "./colorDistance";
+import {
+  compactPalette,
+  isBrand,
+  mapPatternToBrand,
+  matchPalette,
+  rgbOf,
+  type BeadBrand,
+} from "./palettes";
 
 export interface ConvertOptions {
   width: number;
@@ -6,27 +16,14 @@ export interface ConvertOptions {
   mode: "pixel" | "photo";
   colors: number;
   cleanup: number;
+  brand?: BeadBrand | "custom";
 }
 type Point = { rgb: number[]; lab: number[]; weight: number };
-function lab(rgb: number[]) {
-  const [r, g, b] = rgb.map((v) => {
-    v /= 255;
-    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  });
-  const f = (v: number) => (v > 0.008856 ? Math.cbrt(v) : 7.787 * v + 16 / 116);
-  const x = f((0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047);
-  const y = f(0.2126729 * r + 0.7151522 * g + 0.072175 * b);
-  const z = f((0.0193339 * r + 0.119192 * g + 0.9503041 * b) / 1.08883);
-  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
-}
-function distance(a: number[], b: number[]) {
-  return a.reduce((sum, v, i) => sum + (v - b[i]) ** 2, 0);
-}
-function nearest(value: number[], centers: number[][]) {
+function nearest(value: number[], centers: number[][], metric = distance) {
   let best = 0,
     score = Infinity;
   centers.forEach((center, i) => {
-    const d = distance(value, center);
+    const d = metric(value, center);
     if (d < score) {
       score = d;
       best = i;
@@ -43,7 +40,9 @@ export function convertImage(
   data: Uint8ClampedArray,
   options: ConvertOptions,
 ): BeadPattern {
-  const { width, height, mode } = options;
+  const { width, height, mode, brand } = options;
+  if (brand !== undefined && brand !== "custom" && !isBrand(brand))
+    throw new Error("不支持的拼豆品牌");
   if (
     !validSize(width) ||
     !validSize(height) ||
@@ -71,7 +70,7 @@ export function convertImage(
       throw new Error(
         "原稿超过 256 色，请使用照片转换减少颜色，或导入无抗锯齿的像素原稿",
       );
-    return {
+    const pattern: BeadPattern = {
       version: 1,
       title: "像素原稿",
       width,
@@ -82,29 +81,9 @@ export function convertImage(
         name: `颜色 ${i + 1}`,
       })),
     };
+    return isBrand(brand) ? mapPatternToBrand(pattern, brand) : pattern;
   }
-  // Small bilateral filter: smooth close tones without averaging across strong edges.
-  const smooth = pixels.map((rgb, index) => {
-    if (!rgb || !options.cleanup) return rgb;
-    const x = index % width,
-      y = Math.floor(index / width),
-      sum = [0, 0, 0];
-    let weights = 0;
-    for (let dy = -1; dy <= 1; dy++)
-      for (let dx = -1; dx <= 1; dx++) {
-        if (x + dx < 0 || x + dx >= width || y + dy < 0 || y + dy >= height)
-          continue;
-        const other = pixels[(y + dy) * width + x + dx];
-        if (!other) continue;
-        const weight = Math.exp(
-          -distance(rgb, other) / (options.cleanup === 2 ? 1800 : 800) -
-            (dx * dx + dy * dy) / 2,
-        );
-        weights += weight;
-        other.forEach((v, j) => (sum[j] += v * weight));
-      }
-    return sum.map((v) => v / weights);
-  });
+  const smooth = smoothPhoto(pixels, width, height, options.cleanup);
   // Five-bit histogram bounds clustering work and makes results deterministic.
   const histogram = new Map<number, { sum: number[]; weight: number }>();
   smooth.forEach((rgb) => {
@@ -175,8 +154,16 @@ export function convertImage(
     if (movement < 0.01) break;
   }
   // Choose real sampled colors as representatives; merge perceptually redundant tones.
-  const representatives = centers.map((c) =>
-    points.reduce((a, b) => (distance(a.lab, c) < distance(b.lab, c) ? a : b)),
+  const clusters: Point[][] = centers.map(() => []);
+  points.forEach((p) => clusters[nearest(p.lab, centers)].push(p));
+  const representatives = clusters.flatMap((group, i) =>
+    group.length
+      ? [
+          group.reduce((a, b) =>
+            distance(a.lab, centers[i]) <= distance(b.lab, centers[i]) ? a : b,
+          ),
+        ]
+      : [],
   );
   const palettePoints: Point[] = [];
   representatives.forEach((p) => {
@@ -187,47 +174,34 @@ export function convertImage(
     )
       palettePoints.push(p);
   });
-  const paletteLab = palettePoints.map((p) => p.lab);
-  let cells = smooth.map((rgb) => (rgb ? nearest(lab(rgb), paletteLab) : -1));
-  if (options.cleanup) {
-    const source = cells;
-    cells = source.map((color, index) => {
-      if (color < 0) return color;
-      const x = index % width,
-        y = Math.floor(index / width),
-        neighbors = new Map<number, number>();
-      for (let dy = -1; dy <= 1; dy++)
-        for (let dx = -1; dx <= 1; dx++) {
-          if (
-            (!dx && !dy) ||
-            x + dx < 0 ||
-            x + dx >= width ||
-            y + dy < 0 ||
-            y + dy >= height
-          )
-            continue;
-          const c = source[(y + dy) * width + x + dx];
-          if (c >= 0) neighbors.set(c, (neighbors.get(c) ?? 0) + 1);
-        }
-      const majority = [...neighbors].sort((a, b) => b[1] - a[1])[0];
-      return majority &&
-        majority[1] >= 5 &&
-        (neighbors.get(color) ?? 0) <= 1 &&
-        distance(paletteLab[color], paletteLab[majority[0]]) <
-          (options.cleanup === 2 ? 225 : 100)
-        ? majority[0]
-        : color;
-    });
-  }
-  return {
+  let palette = palettePoints.map((p, i) => ({
+    hex: hex(p.rgb),
+    name: `颜色 ${i + 1}`,
+  }));
+  if (isBrand(brand)) palette = matchPalette(palette, brand);
+  palette = palette.filter(
+    (c, i) => palette.findIndex((v) => v.hex === c.hex) === i,
+  );
+  const paletteLab = palette.map((c) => lab(rgbOf(c.hex)));
+  const metric = isBrand(brand) ? colorDistance : distance;
+  const initial = smooth.map((rgb) =>
+    rgb ? nearest(lab(rgb), paletteLab, metric) : -1,
+  );
+  const cells = regularizeLabels(
+    initial,
+    smooth,
+    paletteLab,
+    width,
+    height,
+    options.cleanup,
+    metric,
+  );
+  return compactPalette({
     version: 1,
     title: "图片转图",
     width,
     height,
     cells,
-    palette: palettePoints.map((p, i) => ({
-      hex: hex(p.rgb),
-      name: `颜色 ${i + 1}`,
-    })),
-  };
+    palette,
+  });
 }
