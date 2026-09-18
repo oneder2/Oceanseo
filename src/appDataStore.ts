@@ -10,6 +10,7 @@ export const APP_STATE_KEYS = {
   mealPreferences: "tideplan.meal-preferences.v1",
   beads: "tideplan.bead-pattern.v1",
   life: "tideplan.life.v1",
+  assistant: "tideplan.assistant.v1",
 } as const;
 
 type AppStateKey = (typeof APP_STATE_KEYS)[keyof typeof APP_STATE_KEYS];

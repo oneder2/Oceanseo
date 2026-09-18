@@ -186,6 +186,7 @@ fn life(v: &Value) -> bool {
 }
 pub fn valid(key: &str, v: &Value) -> bool {
     match key {
+        "tideplan.assistant.v1" => crate::assistant::valid_state(v),
         "tideplan.life.v1" => life(v),
         "tideplan.reminders.v1" => {
             v["enabled"].is_boolean()

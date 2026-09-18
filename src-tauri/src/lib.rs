@@ -9,6 +9,7 @@ use tauri::{
 use tauri_plugin_deep_link::DeepLinkExt;
 
 mod ai_settings;
+mod assistant;
 mod backup_validation;
 mod deep_links;
 mod maps;
@@ -257,6 +258,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             generate_meal_plan,
             planning::run_planning_agent,
+            assistant::run_assistant,
+            assistant::cancel_assistant,
             maps::get_map_settings,
             maps::save_map_settings,
             maps::search_places,
@@ -292,6 +295,7 @@ pub fn run() {
                 ai_settings::AiSettingsStore::open(&app_data_dir.join("ai-settings.json"))
                     .map_err(std::io::Error::other)?;
             app.manage(ai_settings_store);
+            app.manage(assistant::AssistantRuntime::default());
             app.manage(
                 maps::MapStore::open(&app_data_dir.join("map-settings.json"))
                     .map_err(std::io::Error::other)?,

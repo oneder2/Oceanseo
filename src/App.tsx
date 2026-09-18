@@ -46,6 +46,7 @@ import CountdownView from "./CountdownView";
 import DatePicker from "./DatePicker";
 import HomeDashboard from "./HomeDashboard";
 import SaveStatus from "./SaveStatus";
+import Assistant from "./assistant/Assistant";
 import { taskDraftKey, notebookDraftKey, readTaskDraft } from "./editorDrafts";
 import MealPlanner from "./MealPlanner";
 import ShoppingList from "./ShoppingList";
@@ -93,7 +94,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.9.2";
+const FALLBACK_APP_VERSION = "0.10.0";
 
 const horizons: Array<{
   id: Horizon;
@@ -196,6 +197,7 @@ export default function App() {
   const [pendingOrigin, setPendingOrigin] = useState<TaskOrigin | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [taskStoreReady, setTaskStoreReady] = useState(false);
+  const [taskLoadError, setTaskLoadError] = useState(false);
   const [taskBusy, setTaskBusy] = useState(false);
   const [notebookTaskId, setNotebookTaskId] = useState<string | null>(null);
   const [notebookNotes, setNotebookNotes] = useState("");
@@ -316,6 +318,7 @@ export default function App() {
         if (active) {
           setTaskStoreReady(true);
           setToast("无法读取计划数据库，请重启应用后重试");
+          setTaskLoadError(true);
         }
       }
     };
@@ -842,6 +845,19 @@ export default function App() {
           <span>潮汐计划</span>
         </div>
         <SaveStatus ready={appDataReady} />
+        <Assistant
+          storageReady={appDataReady}
+          data={{ tasks, countdowns, life, purchases: allPurchaseItems, mealPlan, work: workOverview, ready: appDataReady && taskStoreReady && lifeReady && !taskLoadError && !appLoadError && !lifeError, view }}
+          ai={aiSettings}
+          onNavigate={next => { setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }}
+          onSettings={() => setSettingsOpen(true)}
+          onDraft={(next, name) => {
+            if (editorOpen || taskBusy || localStorage.getItem(taskDraftKey(null))) throw Error("新计划编辑器已有未完成草稿，请先保存或放弃该草稿，再打开这份计划。");
+            localStorage.setItem(taskDraftKey(null), JSON.stringify(next));
+            setEditingId(null); setPendingOrigin({ kind: "local", label: `${name} · 助手草稿`, reference: null });
+            setDraft(next); setConfirmDelete(false); setEditorOpen(true);
+          }}
+        />
         <div className="window-actions" onMouseDown={(event) => event.stopPropagation()}>
           <button
             className={alwaysOnTop ? "is-active" : ""}
@@ -1087,7 +1103,7 @@ export default function App() {
           <section className="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="modal-head">
               <div>
-                <span>{editingId ? "编辑计划" : pendingOrigin ? "外部计划草稿" : "新的计划"}</span>
+                <span>{editingId ? "编辑计划" : pendingOrigin?.label?.endsWith("助手草稿") ? "助手计划草稿" : pendingOrigin ? "外部计划草稿" : "新的计划"}</span>
                 <h2 id="editor-title">{editingId ? "调整接下来的方向" : pendingOrigin ? "确认后再加入计划" : "记下想完成的事"}</h2>
               </div>
               <button className="icon-button" type="button" onClick={() => setEditorOpen(false)} aria-label="关闭" title="关闭">
@@ -1099,7 +1115,7 @@ export default function App() {
               {pendingOrigin && (
                 <div className="deep-link-review" role="status">
                   <span>待审核草稿</span>
-                  <p>链接只预填了计划信息，保存前仍可修改。</p>
+                  <p>{pendingOrigin.label?.endsWith("助手草稿") ? "助手只预填了计划信息，请检查日期和内容，保存后才会加入计划。" : "链接只预填了计划信息，保存前仍可修改。"}</p>
                   {pendingOrigin.label && <small>来源：{pendingOrigin.label}</small>}
                 </div>
               )}
@@ -1284,7 +1300,7 @@ export default function App() {
                 <span className="setting-icon ai-setting-icon"><KeyRound size={18} /></span>
                 <div>
                   <strong>AI 服务</strong>
-                  <p>工作周报、AI 食谱、训练与旅行 Agent 共用此配置。</p>
+                  <p>内置助手、工作周报、AI 食谱、训练与旅行 Agent 共用此配置。服务需支持 Responses API；内置助手还需支持 function calling。</p>
                 </div>
                 <span className={`ai-config-state ${aiSettings?.apiKeyConfigured ? "is-ready" : ""}`}>
                   {aiSettings?.apiKeyConfigured ? `已配置 ${aiSettings.apiKeyHint ?? ""}` : "未配置"}

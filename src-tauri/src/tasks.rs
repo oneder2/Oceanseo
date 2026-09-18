@@ -13,7 +13,7 @@ use uuid::Uuid;
 pub const TASK_SCHEMA_VERSION: &str = "1.0.0";
 const LEGACY_MIGRATION_KEY: &str = "tideplan.tasks.v1";
 const BACKUP_SCHEMA_VERSION: &str = "1.0.0";
-const APP_STATE_KEYS: [&str; 8] = [
+const APP_STATE_KEYS: [&str; 9] = [
     "tideplan.reminders.v1",
     "tideplan.purchase-list.v1",
     "tideplan.meal-plan.v1",
@@ -22,6 +22,7 @@ const APP_STATE_KEYS: [&str; 8] = [
     "tideplan.meal-preferences.v1",
     "tideplan.bead-pattern.v1",
     "tideplan.life.v1",
+    "tideplan.assistant.v1",
 ];
 const MAX_APP_STATE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -1326,6 +1327,27 @@ mod tests {
 
         let state = store.bootstrap_app_state(legacy).unwrap();
         assert!(state.is_empty());
+    }
+
+    #[test]
+    fn assistant_conversation_survives_backup_restore_and_restart() {
+        let temp = TempDir::new().unwrap();
+        let document = serde_json::json!({"version":1,"persona":{"name":"小汐","tone":"gentle","color":"sea","preferences":"周日复盘"},"scopes":["tasks"],"draft":"一个尚未发送的想法","messages":[]});
+        {
+            let store = test_store(&temp);
+            store
+                .set_app_state("tideplan.assistant.v1", document.clone())
+                .unwrap();
+            let backup = store.export_backup().unwrap();
+            store
+                .set_app_state("tideplan.assistant.v1", serde_json::Value::Null)
+                .unwrap();
+            store.restore_backup(backup).unwrap();
+        }
+        let restored = test_store(&temp)
+            .bootstrap_app_state(HashMap::new())
+            .unwrap();
+        assert_eq!(restored.get("tideplan.assistant.v1"), Some(&document));
     }
 
     #[test]

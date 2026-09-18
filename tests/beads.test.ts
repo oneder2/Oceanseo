@@ -209,3 +209,4 @@ test("physical dimensions distinguish occupied artwork from transparent margins"
 });
 import "./reliability.test";
 import "./bead-quality.test";
+import "./assistant.test";
