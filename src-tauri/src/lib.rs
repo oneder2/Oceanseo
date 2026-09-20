@@ -12,6 +12,7 @@ mod ai_settings;
 mod assistant;
 mod backup_validation;
 mod deep_links;
+mod goals;
 mod maps;
 mod planning;
 mod tasks;
@@ -260,6 +261,8 @@ pub fn run() {
             planning::run_planning_agent,
             assistant::run_assistant,
             assistant::cancel_assistant,
+            goals::get_goal_state,
+            goals::commit_goal_changes,
             maps::get_map_settings,
             maps::save_map_settings,
             maps::search_places,

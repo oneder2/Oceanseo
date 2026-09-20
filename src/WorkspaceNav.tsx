@@ -12,6 +12,7 @@ import {
   Users,
   Dumbbell,
   MapPin,
+  Compass,
 } from "lucide-react";
 import type { View } from "./types";
 
@@ -30,6 +31,7 @@ export default function WorkspaceNav({
       name: "全局导航",
       items: [
         { view: "overview", label: "总览", icon: Gauge },
+        { view: "goals", label: "想法与目标", icon: Compass },
         { view: "calendar", label: "计划日历", icon: CalendarRange },
         { view: "countdowns", label: "关键日期", icon: Hourglass },
         { view: "people", label: "人物档案", icon: Users },

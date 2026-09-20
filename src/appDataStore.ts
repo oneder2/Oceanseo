@@ -11,9 +11,19 @@ export const APP_STATE_KEYS = {
   beads: "tideplan.bead-pattern.v1",
   life: "tideplan.life.v1",
   assistant: "tideplan.assistant.v1",
+  goals: "tideplan.goals.v1",
 } as const;
 
 type AppStateKey = (typeof APP_STATE_KEYS)[keyof typeof APP_STATE_KEYS];
+let restoring = false;
+export function assertAppWritable() {
+  if (restoring) throw Error("正在恢复备份，请稍后再保存目标");
+}
+export async function withAppRestore<T>(restore: () => Promise<T>) {
+  restoring = true;
+  try { await flushAppData(); return await appPersistence.exclusive(restore, true); }
+  catch (error) { restoring = false; throw error; }
+}
 export const appPersistence = new ReliableState(
   localStorage,
   Object.values(APP_STATE_KEYS),
@@ -22,15 +32,15 @@ export const appPersistence = new ReliableState(
       ? invoke<void>("set_app_state", { key, value })
       : Promise.resolve(),
 );
-const flushers = new Set<() => void>();
-export function registerStateFlusher(flush: () => void) {
+const flushers = new Set<() => void | Promise<void>>();
+export function registerStateFlusher(flush: () => void | Promise<void>) {
   flushers.add(flush);
   return () => {
     flushers.delete(flush);
   };
 }
 export async function flushAppData() {
-  flushers.forEach((fn) => fn());
+  await Promise.all([...flushers].map((fn) => fn()));
   await appPersistence.flush();
 }
 

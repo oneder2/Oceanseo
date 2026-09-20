@@ -34,6 +34,7 @@ import {
 import type { GWorkspaceProject, WorkDashboard, WorkDraft, WorkMonitorConfig } from "./workMonitorStore";
 
 interface Props {
+  selectedProjectId?: string;
   aiConfigured: boolean;
   onOpenAiSettings: () => void;
   onToast: (message: string) => void;
@@ -66,8 +67,9 @@ function errorMessage(error: unknown) {
   return "操作未完成，请检查配置后重试";
 }
 
-export default function WorkMonitorDashboard({ aiConfigured, onOpenAiSettings, onToast }: Props) {
+export default function WorkMonitorDashboard({ aiConfigured, onOpenAiSettings, onToast, selectedProjectId }: Props) {
   const [dashboard, setDashboard] = useState<WorkDashboard | null>(null);
+  useEffect(()=>{if(selectedProjectId&&dashboard)document.getElementById(`work-project-${selectedProjectId}`)?.scrollIntoView({block:"nearest"});},[selectedProjectId,dashboard]);
   const [dashboardLoading, setDashboardLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState("");
   const [catalog, setCatalog] = useState<GWorkspaceProject[]>([]);
@@ -253,7 +255,7 @@ export default function WorkMonitorDashboard({ aiConfigured, onOpenAiSettings, o
           <header className="work-section-head"><div><span>项目活动</span><h2>近期工作脉冲</h2></div><small>{dashboard.projects.length} 个 Git 项目</small></header>
           <div className="work-project-list">
             {dashboard.projects.map((project) => (
-              <article className="work-project-row" key={project.id}>
+              <article className={`work-project-row${project.id===selectedProjectId?" goal-target-selected":""}`} id={`work-project-${project.id}`} key={project.id}>
                 <div className={`activity-score status-${project.activityStatus}`}><strong>{project.activityScore}</strong><span>活跃度</span></div>
                 <div className="work-project-copy">
                   <div><strong>{project.name}</strong><span>{project.branch}{project.version ? ` · v${project.version}` : ""}</span></div>

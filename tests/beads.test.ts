@@ -1,6 +1,8 @@
 import test from "node:test";
 import "./bead-document.test";
 import "./life.test";
+import "./goals.test";
+import "./goal-handoff.test";
 import assert from "node:assert/strict";
 import { convertImage, type ConvertOptions } from "../src/beads/convert";
 import {

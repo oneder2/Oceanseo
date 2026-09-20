@@ -1,10 +1,11 @@
 import { useState, useSyncExternalStore } from "react";
 import { appPersistence, flushAppData } from "./appDataStore";
-export default function SaveStatus({ ready }: { ready: boolean }) {
-  const status = useSyncExternalStore(
+export default function SaveStatus({ ready, goals }: { ready: boolean; goals?: { loaded: boolean; busy: boolean; error: string; onInspect: () => void } }) {
+  const appStatus = useSyncExternalStore(
     appPersistence.subscribe,
     appPersistence.status,
   );
+  const status = goals?.error ? "error" : appStatus === "error" || appStatus === "pending" ? appStatus : goals?.busy ? "saving" : appStatus;
   const [retrying, setRetrying] = useState(false);
   return (
     <div
@@ -13,7 +14,9 @@ export default function SaveStatus({ ready }: { ready: boolean }) {
       role="status"
     >
       <span>
-        {!ready
+        {goals?.error
+          ? "目标操作需要检查"
+          : !ready || (goals && !goals.loaded)
           ? "等待数据载入"
           : status === "saved"
             ? "自动保存已完成"
@@ -21,7 +24,8 @@ export default function SaveStatus({ ready }: { ready: boolean }) {
               ? "正在自动保存…"
               : "自动保存尚未完成"}
       </span>
-      {(status === "error" || status === "pending") && (
+      {goals?.error && <button onClick={goals.onInspect}>查看详情</button>}
+      {(appStatus === "error" || appStatus === "pending") && (
         <button
           disabled={retrying}
           onClick={async () => {

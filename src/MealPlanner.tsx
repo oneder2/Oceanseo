@@ -17,6 +17,7 @@ import {
 import { mealShoppingItemKey } from "./shoppingStore";
 import { APP_STATE_KEYS, persistAppState } from "./appDataStore";
 import type { MealPlan, MealPreferences } from "./types";
+import type { GoalSeed } from "./goals/model";
 
 const PREFERENCES_STORAGE_KEY = APP_STATE_KEYS.mealPreferences;
 
@@ -53,6 +54,7 @@ function loadPreferences(): MealPreferences {
 }
 
 interface MealPlannerProps {
+  seed?: GoalSeed;
   aiConfigured: boolean;
   plan: MealPlan | null;
   checkedItems: string[];
@@ -65,12 +67,13 @@ interface MealPlannerProps {
   planningItemCount: number;
 }
 
-export default function MealPlanner({ aiConfigured, plan, checkedItems, onPlanGenerated, onToggleShoppingItem, onOpenAiSettings, onOpenShoppingList, onToast, planningContext, planningItemCount }: MealPlannerProps) {
+export default function MealPlanner({ aiConfigured, plan, checkedItems, onPlanGenerated, onToggleShoppingItem, onOpenAiSettings, onOpenShoppingList, onToast, planningContext, planningItemCount, seed }: MealPlannerProps) {
   const [preferences, setPreferences] = useState<MealPreferences>(loadPreferences);
   const [selectedDay, setSelectedDay] = useState(0);
   const [formOpen, setFormOpen] = useState(() => !plan);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  useEffect(()=>{if(seed){setFormOpen(true);const conditions=seed.conditions?.meals;if(conditions)setPreferences(p=>({...p,...Object.fromEntries(Object.entries(conditions).filter(([,v])=>v!==null))}));}},[seed?.id]);
 
   useEffect(() => {
     void persistAppState(PREFERENCES_STORAGE_KEY, preferences).catch(() => undefined);

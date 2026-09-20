@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -47,6 +47,12 @@ import DatePicker from "./DatePicker";
 import HomeDashboard from "./HomeDashboard";
 import SaveStatus from "./SaveStatus";
 import Assistant from "./assistant/Assistant";
+const GoalWorkspace = lazy(() => import("./goals/GoalWorkspace"));
+import GoalFocus from "./goals/GoalFocus";
+import { useGoals } from "./goals/store";
+import { useGoalRhythm } from "./goals/useGoalRhythm";
+import { businessTargets } from "./goals/context";
+import { destinationView, nextActions, type Action as GoalAction } from "./goals/model";
 import { taskDraftKey, notebookDraftKey, readTaskDraft } from "./editorDrafts";
 import MealPlanner from "./MealPlanner";
 import ShoppingList from "./ShoppingList";
@@ -94,7 +100,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.10.0";
+const FALLBACK_APP_VERSION = "0.11.0";
 
 const horizons: Array<{
   id: Horizon;
@@ -244,8 +250,36 @@ export default function App() {
   const [pendingBackup, setPendingBackup] = useState<DataBackup | null>(null);
   const [backupError, setBackupError] = useState("");
   const [toast, setToast] = useState("");
+  const aiPurchaseItems = useMemo(() => createMealPurchaseItems(mealPlan, mealCheckedItems), [mealCheckedItems, mealPlan]);
+  const allPurchaseItems = useMemo(() => [...purchaseItems, ...aiPurchaseItems], [aiPurchaseItems, purchaseItems]);
+  const goals = useGoals(appDataReady && taskStoreReady && !taskLoadError, tasks, setTasks);
+  const [goalActionId, setGoalActionId] = useState("");
+  const goalAction = goals.state.actions.find(a=>a.id===goalActionId);
+  const goalTask = tasks.find(t=>t.id===goalAction?.taskId);
+  const goalTargets = businessTargets(life, allPurchaseItems, workOverview);
+  const goalSeed = goalAction && goalTask && !goalAction.targetId ? {id:goalAction.id,title:goalTask.title,notes:goalTask.notes,startDate:goalTask.startDate,dueDate:goalTask.dueDate,conditions:goalAction.conditions} : undefined;
+  useGoalRhythm(goals,tasks,life,reminderSettings,allPurchaseItems);
+  function openGoalAction(action:GoalAction) {
+    const task=tasks.find(t=>t.id===action.taskId);
+    if(!task){setToast("关联任务已删除，请在整理台重新关联");return;}
+    if(action.targetId && !goalTargets.some(t=>t.id===action.targetId&&t.destination===action.destination)){setToast("关联业务对象已删除或不可用，请在整理台修改执行入口");return;}
+    setGoalActionId(action.id);
+    if(action.destination==="task"){openNotebook(task);return;}
+    setLifeSelection(action.targetId?{id:action.targetId,date:action.targetDate||goalTargets.find(t=>t.id===action.targetId)?.date||dateKey()}:undefined);
+    setView(destinationView(action));setMobileMenuOpen(false);
+  }
+  async function organizeThought(text:string) {
+    if(text.trim())await goals.update(s=>({...s,thoughts:[...s.thoughts,{id:crypto.randomUUID(),text:text.slice(0,12000),status:"inbox",createdAt:new Date().toISOString()}]}));
+    setGoalActionId("");setView("goals");setMobileMenuOpen(false);
+  }
+  useEffect(()=>{
+    if(!goalAction||goalAction.targetId||!goals.loaded)return;
+    const target=goalTargets.find(t=>t.id===goalAction.id&&t.destination===goalAction.destination);
+    if(target)goals.edit(s=>({...s,actions:s.actions.map(a=>a.id===goalAction.id?{...a,targetId:target.id,targetDate:target.date}:a)}));
+  },[life,goalActionId]);
   const { fullscreen, busy: fullscreenBusy, toggle: toggleFullscreen } = useFullscreen(setToast);
-  const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, countdowns, reminderSettings, calendarLifeEvents, appDataReady && lifeReady && taskStoreReady);
+  const nextGoalAction = nextActions(goals.state,tasks,life,undefined,allPurchaseItems).ready[0];
+  const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, countdowns, reminderSettings, calendarLifeEvents, appDataReady && lifeReady && taskStoreReady, goals.state.preferences.checkins && nextGoalAction ? `下一步：${nextGoalAction.task?.title}，约 ${nextGoalAction.action.minutes} 分钟。打开总览开始。` : "");
 
   useEffect(()=>{
     if(!appDataReady)return;
@@ -428,14 +462,6 @@ export default function App() {
   const completedTasks = tasks.filter((task) => task.completedAt);
   const completionRate = tasks.length ? Math.round((completedTasks.length / tasks.length) * 100) : 0;
   const overdueCount = activeTasks.filter(isTaskOverdue).length;
-  const aiPurchaseItems = useMemo(
-    () => createMealPurchaseItems(mealPlan, mealCheckedItems),
-    [mealCheckedItems, mealPlan],
-  );
-  const allPurchaseItems = useMemo(
-    () => [...purchaseItems, ...aiPurchaseItems],
-    [aiPurchaseItems, purchaseItems],
-  );
   const mealPlanningContext = useMemo(() => {
     const today = dateKey();
     const endDate = new Date();
@@ -751,6 +777,7 @@ export default function App() {
     const item = createPurchaseItem(draft);
     if (!item) return false;
     setPurchaseItems((current) => [item, ...current]);
+    if(goalAction?.destination==="shopping-list"&&!goalAction.targetId)goals.edit(s=>({...s,actions:s.actions.map(a=>a.id===goalAction.id?{...a,targetId:item.id}:a)}));
     setToast("物品已加入采购清单");
     return true;
   }
@@ -790,7 +817,7 @@ export default function App() {
     setView("countdowns");
   }
 
-  const title = view === "people" ? "人物档案" : view === "fitness" ? "训练计划" : view === "travel" ? "旅行规划" : view === "bead-studio" ? "拼豆图纸" : view === "overview"
+  const title = view === "goals" ? "想法与目标" : view === "people" ? "人物档案" : view === "fitness" ? "训练计划" : view === "travel" ? "旅行规划" : view === "bead-studio" ? "拼豆图纸" : view === "overview"
     ? "今日总览"
     : view === "today"
     ? "今日计划"
@@ -808,7 +835,7 @@ export default function App() {
         ? "完成记录"
         : "所有计划";
   const subtitle =
-    view === "people" ? "把关心的人与他们的偏好，变成计划的基础。" : view === "fitness" ? "让每个训练周期都有可执行的目标和真实记录。" : view === "travel" ? "从同行者的偏好出发，把日程连成路线。" : view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
+    view === "goals" ? "先放下所有线索，再找到此刻可以走的一步。" : view === "people" ? "把关心的人与他们的偏好，变成计划的基础。" : view === "fitness" ? "让每个训练周期都有可执行的目标和真实记录。" : view === "travel" ? "从同行者的偏好出发，把日程连成路线。" : view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
       ? "把计划、时间、生活与工作放进同一条节奏里。"
       : view === "today"
       ? overdueCount
@@ -844,13 +871,14 @@ export default function App() {
           <span className="brand-mark"><Check size={13} strokeWidth={3} /></span>
           <span>潮汐计划</span>
         </div>
-        <SaveStatus ready={appDataReady} />
+        <SaveStatus ready={appDataReady} goals={{ loaded: goals.loaded, busy: goals.busy, error: goals.error, onInspect: () => { setGoalActionId(""); setView("goals"); } }} />
         <Assistant
           storageReady={appDataReady}
-          data={{ tasks, countdowns, life, purchases: allPurchaseItems, mealPlan, work: workOverview, ready: appDataReady && taskStoreReady && lifeReady && !taskLoadError && !appLoadError && !lifeError, view }}
+          data={{ tasks, countdowns, life, purchases: allPurchaseItems, mealPlan, work: workOverview, goals: goals.state, ready: appDataReady && taskStoreReady && lifeReady && goals.loaded && !taskLoadError && !appLoadError && !lifeError, view }}
           ai={aiSettings}
-          onNavigate={next => { setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }}
+          onNavigate={next => { setGoalActionId(""); setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }}
           onSettings={() => setSettingsOpen(true)}
+          onOrganize={organizeThought}
           onDraft={(next, name) => {
             if (editorOpen || taskBusy || localStorage.getItem(taskDraftKey(null))) throw Error("新计划编辑器已有未完成草稿，请先保存或放弃该草稿，再打开这份计划。");
             localStorage.setItem(taskDraftKey(null), JSON.stringify(next));
@@ -896,7 +924,7 @@ export default function App() {
             <strong>{currentGreeting()}</strong>
           </div>
 
-          <WorkspaceNav view={view} onNavigate={next => { setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }} />
+          <WorkspaceNav view={view} onNavigate={next => { setGoalActionId(""); setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }} />
 
           <section className="progress-panel" aria-label="计划进度">
             <div className="progress-heading">
@@ -949,7 +977,9 @@ export default function App() {
             </div>
           </section>
 
-          {!appDataReady ? <div role="status"><p>{appLoadError || "正在读取本机数据…"}</p>{appLoadError && <button className="secondary-button" onClick={() => window.location.reload()}>重新载入</button>}</div> : ["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? <BeadStudio /> : view === "overview" ? (
+          {goalAction&&goalTask&&view===destinationView(goalAction)&&goalAction.destination!=="task"&&<section className="goal-handoff"><div><small>来自目标 · {goals.state.goals.find(g=>g.id===goalAction.goalId)?.title}</small><strong>{goalTask.title}</strong>{goalTask.notes&&<p>{goalTask.notes}</p>}</div><button onClick={()=>openNotebook(goalTask)}>事项记事本</button><button onClick={()=>void toggleTask(goalTask.id)}>{goalTask.completedAt?"恢复未完成":"这一步已完成"}</button><button onClick={()=>{setGoalActionId("");setView("goals");}}>返回目标</button></section>}
+          {view==="overview"&&goals.loaded&&<GoalFocus state={goals.state} tasks={tasks} life={life} purchases={allPurchaseItems} onOpen={openGoalAction} onOrganize={()=>setView("goals")}/>}
+          {!appDataReady ? <div role="status"><p>{appLoadError || "正在读取本机数据…"}</p>{appLoadError && <button className="secondary-button" onClick={() => window.location.reload()}>重新载入</button>}</div> : view==="goals" ? <Suspense fallback={<p role="status">正在打开整理台…</p>}><GoalWorkspace controller={goals} tasks={tasks} life={life} purchases={allPurchaseItems} targets={goalTargets} configured={aiSettings?.apiKeyConfigured??false} onSettings={()=>setSettingsOpen(true)} onOpen={openGoalAction} onTask={openNotebook} onComplete={id=>void toggleTask(id)}/></Suspense> : ["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="fitness"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="travel"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? <BeadStudio /> : view === "overview" ? (
             <HomeDashboard
               lifeEvents={calendarLifeEvents}
               onOpenLife={event => { setLifeSelection({ id: event.targetId, date: event.date }); setView(event.kind === "training" ? "fitness" : "travel"); }}
@@ -966,6 +996,7 @@ export default function App() {
             />
           ) : view === "meal-planner" ? (
             <MealPlanner
+              seed={goalAction?.destination==="meal-planner"?goalSeed:undefined}
               aiConfigured={aiSettings?.apiKeyConfigured ?? false}
               plan={mealPlan}
               checkedItems={mealCheckedItems}
@@ -974,11 +1005,13 @@ export default function App() {
               onOpenAiSettings={() => setSettingsOpen(true)}
               onOpenShoppingList={() => setView("shopping-list")}
               onToast={setToast}
-              planningContext={mealPlanningContext.text}
+              planningContext={mealPlanningContext.text + (goalAction?.destination==="meal-planner"&&goalTask?`\n当前目标行动：${goalTask.title}\n条件：${goalTask.notes}`:"")}
               planningItemCount={mealPlanningContext.count}
             />
           ) : view === "shopping-list" ? (
             <ShoppingList
+              selectedId={goalAction?.destination==="shopping-list"?goalAction.targetId:undefined}
+              seed={goalAction?.destination==="shopping-list"?goalSeed:undefined}
               items={allPurchaseItems}
               onAdd={addPurchaseItem}
               onUpdate={editPurchaseItem}
@@ -989,6 +1022,7 @@ export default function App() {
             />
           ) : view === "work-monitor" ? (
             <WorkMonitorDashboard
+              selectedProjectId={goalAction?.destination==="work-monitor"?goalAction.targetId:undefined}
               aiConfigured={aiSettings?.apiKeyConfigured ?? false}
               onOpenAiSettings={() => setSettingsOpen(true)}
               onToast={setToast}

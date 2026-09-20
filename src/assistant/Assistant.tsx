@@ -38,6 +38,7 @@ interface Props {
   onNavigate: (view: View) => void;
   onDraft: (draft: TaskDraft, name: string) => void;
   onSettings: () => void;
+  onOrganize: (text: string) => Promise<void>;
 }
 const stages: Record<string, string> = {
   thinking: "在听，也在整理思路…",
@@ -52,6 +53,7 @@ export default function Assistant({
   onNavigate,
   onDraft,
   onSettings,
+  onOrganize,
 }: Props) {
   const { state, change, loaded, loadError, saveError } =
     useAssistantState(storageReady);
@@ -62,6 +64,7 @@ export default function Assistant({
   const [error, setError] = useState(""),
     [clearConfirm, setClearConfirm] = useState(false);
   const [contextPreview, setContextPreview] = useState(false);
+  const acting = useRef(false);
   const trigger = useRef<HTMLButtonElement>(null),
     input = useRef<HTMLTextAreaElement>(null),
     thread = useRef<HTMLDivElement>(null);
@@ -215,9 +218,12 @@ export default function Assistant({
       }
     }
   }
-  function act(messageId: string, action: AgentAction) {
+  async function act(messageId: string, action: AgentAction) {
+    if (acting.current) return;
+    acting.current = true;
     try {
       if (action.type === "navigate") onNavigate(action.view);
+      else if (action.type === "organize") await onOrganize(action.text);
       else onDraft(action.draft, persona.name);
       change((s) => ({
         ...s,
@@ -236,6 +242,8 @@ export default function Assistant({
       close();
     } catch (e) {
       setError(e instanceof Error ? e.message : "暂时无法打开，请稍后重试");
+    } finally {
+      acting.current = false;
     }
   }
   const canSend = loaded && data.ready && !busy && !!state.draft.trim();
@@ -478,10 +486,10 @@ export default function Assistant({
                 {m.actions.map((a) => (
                   <div className="assistant-action" key={a.id}>
                     <span>
-                      {a.type === "navigate" ? "功能入口" : "待检查的计划草稿"}
+                      {a.type === "navigate" ? "功能入口" : a.type==="organize"?"交给目标整理台":"待检查的计划草稿"}
                     </span>
                     <strong>
-                      {a.type === "navigate" ? PAGES[a.view] : a.draft.title}
+                      {a.type === "navigate" ? PAGES[a.view] : a.type==="organize"?"把这些想法整理成目标":a.draft.title}
                     </strong>
                     {a.type === "task_draft" && (
                       <>
@@ -503,6 +511,7 @@ export default function Assistant({
                         )}
                       </>
                     )}
+                    {a.type === "organize" && <details><summary>查看交给整理台的内容</summary><p>{a.text}</p></details>}
                     {a.status === "pending" ? (
                       <div>
                         <button
@@ -511,7 +520,7 @@ export default function Assistant({
                         >
                           {a.type === "navigate"
                             ? "打开这个页面"
-                            : "打开草稿检查并保存"}
+                            : a.type==="organize"?"保存想法并继续整理":"打开草稿检查并保存"}
                           <ArrowUpRight size={14} />
                         </button>
                         <button
@@ -544,7 +553,7 @@ export default function Assistant({
                         {a.status === "opened"
                           ? a.type === "navigate"
                             ? "已打开页面"
-                            : "已打开草稿，请在编辑器中完成保存"
+                            : a.type==="organize"?"已送入收集箱，请在整理台继续":"已打开草稿，请在编辑器中完成保存"
                           : "已忽略"}
                       </small>
                     )}
@@ -659,6 +668,7 @@ export default function Assistant({
                 ? "可以收起窗口，我会继续整理。"
                 : "计划草稿由你检查并保存。AI 建议也需要你的判断。"}
             </p>
+            <button className="assistant-organize" disabled={busy||!data.ready} onClick={()=>{const text=state.draft.trim()||[...state.messages].reverse().find(m=>m.role==="user")?.content||"";void onOrganize(text).then(()=>{change(s=>({...s,draft:""}));close();}).catch(e=>setError(String(e)));}}>把这些想法带到目标整理台 ↗</button>
           </div>
         </>
       )}

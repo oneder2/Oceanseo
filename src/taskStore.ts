@@ -3,7 +3,7 @@ import type { Horizon, Priority, Task, TaskDraft, TaskOrigin } from "./types";
 
 const LEGACY_STORAGE_KEY = "tideplan.tasks.v1";
 
-interface TaskRecord {
+export interface TaskRecord {
   schema_version: "1.0.0";
   id: string;
   title: string;
@@ -28,6 +28,8 @@ interface LegacyTask {
   dueDate?: string | null;
   createdAt: string;
   completedAt?: string | null;
+  updatedAt?: string;
+  origin?: TaskOrigin | null;
 }
 
 export type DeepLinkMessage =
@@ -62,7 +64,7 @@ export interface BootstrapResult {
   migrationError: string | null;
 }
 
-function toTask(record: TaskRecord): Task {
+export function toTask(record: TaskRecord): Task {
   return {
     schemaVersion: record.schema_version,
     id: record.id,
@@ -107,9 +109,9 @@ function browserLegacyTasks(): Task[] {
       startDate: record.startDate ?? "",
       dueDate: record.dueDate ?? "",
       createdAt: record.createdAt,
-      updatedAt: record.completedAt ?? record.createdAt,
+      updatedAt: record.updatedAt ?? record.completedAt ?? record.createdAt,
       completedAt: record.completedAt ?? null,
-      origin: { kind: "migration", label: "Browser preview", reference: null },
+      origin: record.origin ?? { kind: "migration", label: "Browser preview", reference: null },
     }));
   } catch {
     return [];
@@ -117,6 +119,11 @@ function browserLegacyTasks(): Task[] {
 }
 
 let previewTasks: Task[] | null = null;
+
+export function replacePreviewTasks(tasks: Task[]) {
+  previewTasks = tasks;
+  localStorage.setItem(LEGACY_STORAGE_KEY, JSON.stringify(tasks));
+}
 
 export async function bootstrapTasks(): Promise<BootstrapResult> {
   if (!isTauri()) {
@@ -148,7 +155,7 @@ export async function createTask(draft: TaskDraft, origin: TaskOrigin | null): P
       completedAt: null,
       origin: origin ?? { kind: "local", label: null, reference: null },
     };
-    previewTasks = [task, ...(previewTasks ?? [])];
+    replacePreviewTasks([task, ...(previewTasks ?? [])]);
     return task;
   }
   return toTask(await invoke<TaskRecord>("create_task", { mutation: mutation(draft, origin) }));
@@ -159,7 +166,7 @@ export async function updateTask(id: string, draft: TaskDraft): Promise<Task> {
     const existing = (previewTasks ?? []).find((task) => task.id === id);
     if (!existing) throw new Error("task_not_found");
     const updated = { ...existing, ...draft, title: draft.title.trim(), updatedAt: new Date().toISOString() };
-    previewTasks = (previewTasks ?? []).map((task) => task.id === id ? updated : task);
+    replacePreviewTasks((previewTasks ?? []).map((task) => task.id === id ? updated : task));
     return updated;
   }
   return toTask(await invoke<TaskRecord>("update_task", { id, mutation: mutation(draft) }));
@@ -174,7 +181,7 @@ export async function setTaskCompleted(id: string, completed: boolean): Promise<
       completedAt: completed ? new Date().toISOString() : null,
       updatedAt: new Date().toISOString(),
     };
-    previewTasks = (previewTasks ?? []).map((task) => task.id === id ? updated : task);
+    replacePreviewTasks((previewTasks ?? []).map((task) => task.id === id ? updated : task));
     return updated;
   }
   return toTask(await invoke<TaskRecord>("set_task_completed", { id, completed }));
@@ -182,7 +189,7 @@ export async function setTaskCompleted(id: string, completed: boolean): Promise<
 
 export async function deleteTask(id: string): Promise<void> {
   if (!isTauri()) {
-    previewTasks = (previewTasks ?? []).filter((task) => task.id !== id);
+    replacePreviewTasks((previewTasks ?? []).filter((task) => task.id !== id));
     return;
   }
   await invoke("delete_task", { id });

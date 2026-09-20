@@ -4,6 +4,7 @@ import { addDays, lifeEvents } from "../life/model";
 import type { WorkDashboard } from "../workMonitorStore";
 import type { Scope } from "./model";
 import { dateKey } from "../dateUtils";
+import type { GoalState } from "../goals/model";
 
 export interface AssistantData {
   tasks: Task[];
@@ -14,6 +15,7 @@ export interface AssistantData {
   work: WorkDashboard | null;
   ready: boolean;
   view: View;
+  goals?: GoalState;
 }
 /** Construct an explicit allowlisted projection. Never spread source records:
  * task notebooks, birthdays, private notes, routes and local paths stay local. */
@@ -34,6 +36,7 @@ export function makeContext(
       (t) => t.completedAt && t.completedAt.slice(0, 10) >= start,
     );
     const summarize = (t: Task) => ({
+      id: t.id,
       title: shorten(t.title),
       horizon: t.horizon,
       priority: t.priority,
@@ -42,6 +45,9 @@ export function makeContext(
       completedAt: t.completedAt,
     });
     sections.tasks = {
+      goals: data.goals?.goals.slice(0,40).map(g=>({id:g.id,parentId:g.parentId,title:g.title,criterion:shorten(g.criterion,300),status:g.status,reviewDate:g.reviewDate})) ?? [],
+      actions: data.goals?.actions.slice(0,80).map(a=>({id:a.id,goalId:a.goalId,taskId:a.taskId,dependsOn:a.dependsOn,minutes:a.minutes,energy:a.energy,blocker:shorten(a.blocker),deferredUntil:a.deferredUntil,destination:a.destination})) ?? [],
+      goalsTruncated: (data.goals?.goals.length??0)>40 || (data.goals?.actions.length??0)>80,
       pendingCount: pending.length,
       pending: pending.slice(0, 80).map(summarize),
       recentCompletedCount: recent.length,

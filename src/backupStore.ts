@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { appPersistence, flushAppData } from "./appDataStore";
+import { flushAppData, withAppRestore } from "./appDataStore";
 
 export interface DataBackup {
   schemaVersion: string;
@@ -53,8 +53,7 @@ export async function selectDataBackup() {
 
 export async function restoreDataBackup(backup: DataBackup) {
   if (!isTauri()) throw new Error("backup_desktop_only");
-  await flushAppData();
-  return appPersistence.exclusive(async () => {
+  return withAppRestore(async () => {
     const snapshotPath = await invoke<string>("restore_data_backup", {
       backup,
     });
@@ -69,5 +68,5 @@ export async function restoreDataBackup(backup: DataBackup) {
     }
     window.location.reload();
     return snapshotPath;
-  }, true);
+  });
 }

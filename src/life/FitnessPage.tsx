@@ -16,6 +16,7 @@ import type { UpdateLife } from "./PeoplePage";
 import { Choice } from "./Fields";
 import { reviewResult, runAgent, trainingResult, useJob } from "./agent";
 import { useDraft, DraftNotice } from "../drafts";
+import type { GoalSeed } from "../goals/model";
 const blank = (): TrainingPlan => ({
   id: uid(),
   title: "我的训练计划",
@@ -33,11 +34,13 @@ export default function FitnessPage({
   update,
   selected,
   onSettings,
+  seed,
 }: {
   data: LifeData;
   update: UpdateLife;
   selected?: { id: string; date: string };
   onSettings: () => void;
+  seed?: GoalSeed;
 }) {
   const initialPlan =
     data.training.find((p) => p.id === selected?.id) ??
@@ -57,6 +60,7 @@ export default function FitnessPage({
     [message, setMessage] = useState("");
   const [review, setReview] = useState("");
   const job = useJob();
+  useEffect(()=>{if(seed){const conditions=seed.conditions?.training;editor.open({...blank(),id:seed.id,title:seed.title,goal:seed.notes||seed.title,startDate:seed.startDate||dateKey(),...(conditions?.intervalDays?{intervalDays:conditions.intervalDays}:{}),...(conditions?.cycles?{cycles:conditions.cycles}:{}),...(conditions?.exercises.length?{exercises:conditions.exercises.map((e,i)=>({...e,id:`${seed.id}-exercise-${i}`}))}:{})});setEditing(true);}},[seed?.id]);
   const plan = data.training.find((p) => p.id === active),
     record = data.workouts.find((w) => w.planId === active && w.date === date);
   const recording = useDraft(`workout:${active}:${date}`, () => ({

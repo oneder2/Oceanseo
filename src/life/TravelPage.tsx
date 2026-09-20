@@ -19,6 +19,7 @@ import { Choice, PeoplePicker } from "./Fields";
 import { runAgent, travelResult, useJob } from "./agent";
 import { mapRoute, searchPlaces } from "./maps";
 import { useDraft, DraftNotice } from "../drafts";
+import type { GoalSeed } from "../goals/model";
 const TripMap = lazy(() => import("./TripMap"));
 const blank = (): Trip => ({
   id: uid(),
@@ -42,11 +43,13 @@ export default function TravelPage({
   update,
   selected,
   onSettings,
+  seed,
 }: {
   data: LifeData;
   update: UpdateLife;
   selected?: { id: string; date: string };
   onSettings: () => void;
+  seed?: GoalSeed;
 }) {
   const editor = useDraft<Trip>(
     "travel",
@@ -67,6 +70,7 @@ export default function TravelPage({
     places: Place[];
   } | null>(null);
   const job = useJob();
+  useEffect(()=>{if(seed){const start=seed.startDate||dateKey(),conditions=seed.conditions?.travel;const restored=editor.open({...blank(),id:seed.id,title:seed.title,purpose:seed.title,preferences:seed.notes,startDate:start,endDate:seed.dueDate||addDays(start,2),...(conditions?Object.fromEntries(Object.entries(conditions).filter(([,v])=>v!==null)): {})});setDay(restored.startDate);}},[seed?.id]);
   useEffect(() => {
     if (selected) {
       const t = data.trips.find((t) => t.id === selected.id);

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "revision": 0,
+  "thoughts": [],
+  "draft": "",
+  "goals": [],
+  "actions": [],
+  "proposals": [],
+  "reviews": [],
+  "preferences": {
+    "minutes": 60,
+    "energy": "normal",
+    "dailyLimit": 3,
+    "checkins": true,
+    "autoReview": false,
+    "reviewTime": "19:00",
+    "reviewWeekday": 0
+  },
+  "operations": [],
+  "undo": null
+}

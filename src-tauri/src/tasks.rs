@@ -13,7 +13,7 @@ use uuid::Uuid;
 pub const TASK_SCHEMA_VERSION: &str = "1.0.0";
 const LEGACY_MIGRATION_KEY: &str = "tideplan.tasks.v1";
 const BACKUP_SCHEMA_VERSION: &str = "1.0.0";
-const APP_STATE_KEYS: [&str; 9] = [
+const APP_STATE_KEYS: [&str; 10] = [
     "tideplan.reminders.v1",
     "tideplan.purchase-list.v1",
     "tideplan.meal-plan.v1",
@@ -23,6 +23,7 @@ const APP_STATE_KEYS: [&str; 9] = [
     "tideplan.bead-pattern.v1",
     "tideplan.life.v1",
     "tideplan.assistant.v1",
+    "tideplan.goals.v1",
 ];
 const MAX_APP_STATE_BYTES: usize = 2 * 1024 * 1024;
 
@@ -110,6 +111,142 @@ pub struct TaskStore {
 }
 
 impl TaskStore {
+    pub fn goal_state(&self) -> Result<Option<serde_json::Value>, String> {
+        let connection = self.connection.lock().map_err(|_| "database_lock_failed")?;
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT value_json FROM app_state WHERE key=?1",
+                [crate::goals::KEY],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| "目标数据读取失败")?;
+        raw.map(|r| {
+            serde_json::from_str(&r).map_err(|_| "目标数据格式异常，请恢复有效备份".to_string())
+        })
+        .transpose()
+    }
+
+    pub fn commit_goals(
+        &self,
+        request: crate::goals::GoalCommit,
+    ) -> Result<crate::goals::GoalReply, String> {
+        use serde_json::json;
+        let mut connection = self.connection.lock().map_err(|_| "database_lock_failed")?;
+        let tx = connection.transaction().map_err(|_| "目标事务无法启动")?;
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT value_json FROM app_state WHERE key=?1",
+                [crate::goals::KEY],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| "目标数据读取失败")?;
+        let current: serde_json::Value = raw
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|_| "目标数据格式异常")?
+            .unwrap_or(serde_json::Value::Null);
+        if !current.is_null() && !crate::goals::valid_state(&current) {
+            return Err("目标数据格式异常，请恢复有效备份".into());
+        }
+        if current["operations"]
+            .as_array()
+            .is_some_and(|a| a.contains(&json!(request.operation_id)))
+        {
+            return Ok(crate::goals::GoalReply {
+                state: current,
+                tasks: list_tasks_from_connection(&tx)?,
+            });
+        }
+        if current["revision"].as_u64().unwrap_or(0) != request.expected_revision {
+            return Err("目标数据已变化，请重新载入后重试".into());
+        }
+        let next = request.next;
+        if !crate::goals::valid_state(&next) {
+            return Err("目标关系或字段无效，未保存任何更改".into());
+        }
+        validate_app_state(crate::goals::KEY, &next)?;
+        let previous_ops = current["operations"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut expected_ops = previous_ops
+            .into_iter()
+            .rev()
+            .take(1999)
+            .collect::<Vec<_>>();
+        expected_ops.reverse();
+        expected_ops.push(json!(request.operation_id));
+        if next["operations"] != json!(expected_ops) {
+            return Err("操作历史不一致，请重新载入".into());
+        }
+        if next["revision"].as_u64() != Some(request.expected_revision + 1)
+            || next["operations"].as_array().and_then(|a| a.last())
+                != Some(&json!(request.operation_id))
+        {
+            return Err("目标版本或操作编号无效".into());
+        }
+        let existing = list_tasks_from_connection(&tx)?;
+        if request.checks.iter().any(|check| {
+            !existing
+                .iter()
+                .any(|t| t.id == check.id && t.updated_at == check.updated_at)
+        }) {
+            return Err("关联任务已变化，请重新整理".into());
+        }
+        if request.create_tasks.len() > 100 {
+            return Err("一次最多创建 100 项行动".into());
+        }
+        if request.undo {
+            let undo = &current["undo"];
+            if undo.is_null()
+                || undo["revision"] != current["revision"]
+                || !request.create_tasks.is_empty()
+                || next["goals"] != undo["goals"]
+                || next["actions"] != undo["actions"]
+            {
+                return Err("方案之后的目标已修改，无法整批撤销；请逐项调整".into());
+            }
+            for snapshot in undo["createdTasks"].as_array().ok_or("撤销记录无效")? {
+                let task = existing
+                    .iter()
+                    .find(|t| snapshot["id"] == t.id)
+                    .ok_or("方案任务已删除，无法整批撤销")?;
+                if task_ui(task) != *snapshot {
+                    return Err("方案任务已编辑或完成，无法整批撤销；请逐项调整".into());
+                }
+                tx.execute("DELETE FROM tasks WHERE id=?1", [&task.id])
+                    .map_err(|_| "撤销失败")?;
+            }
+        }
+        for task in &request.create_tasks {
+            validate_task(task).map_err(|e| format!("行动无效：{e}"))?;
+            if !next["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["taskId"] == task.id)
+            {
+                return Err("新任务缺少目标关联".into());
+            }
+            insert_task(&tx, task).map_err(|_| "创建行动失败，整批方案未写入")?;
+        }
+        let tasks = list_tasks_from_connection(&tx)?;
+        for a in next["actions"].as_array().unwrap() {
+            let was_linked = current["actions"].as_array().is_some_and(|old| {
+                old.iter()
+                    .any(|o| o["id"] == a["id"] && o["taskId"] == a["taskId"])
+            });
+            if !was_linked && !tasks.iter().any(|t| a["taskId"] == t.id) {
+                return Err("关联任务不存在，方案未写入".into());
+            }
+        }
+        tx.execute("INSERT INTO app_state(key,value_json,updated_at) VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",params![crate::goals::KEY,serialize_app_state(&next)?,now_timestamp()]).map_err(|_|"目标保存失败")?;
+        tx.commit().map_err(|_| "目标事务未完成，请重试")?;
+        Ok(crate::goals::GoalReply { state: next, tasks })
+    }
+
     pub fn open(database_path: &Path) -> Result<Self, String> {
         let parent = database_path
             .parent()
@@ -782,6 +919,10 @@ fn insert_task(connection: &Connection, task: &TaskRecord) -> rusqlite::Result<u
     )
 }
 
+fn task_ui(t: &TaskRecord) -> serde_json::Value {
+    serde_json::json!({"schemaVersion":t.schema_version,"id":t.id,"title":t.title,"notes":t.notes,"horizon":t.horizon,"priority":t.priority,"startDate":t.start_date.as_deref().unwrap_or(""),"dueDate":t.due_date.as_deref().unwrap_or(""),"createdAt":t.created_at,"updatedAt":t.updated_at,"completedAt":t.completed_at,"origin":t.origin})
+}
+
 fn update_task_row(connection: &Connection, task: &TaskRecord) -> rusqlite::Result<usize> {
     let (kind, label, reference) = origin_columns(task.origin.as_ref());
     connection.execute(
@@ -1045,6 +1186,133 @@ mod tests {
             due_date: due_date.map(str::to_string),
             origin: None,
         }
+    }
+
+    fn goal_fixture() -> serde_json::Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/goals-empty.json")).unwrap()
+    }
+    fn goal_task(id: &str) -> TaskRecord {
+        TaskRecord {
+            schema_version: "1.0.0".into(),
+            id: id.into(),
+            title: "验证升级".into(),
+            notes: "".into(),
+            horizon: "short".into(),
+            priority: "normal".into(),
+            start_date: None,
+            due_date: None,
+            created_at: "2026-09-20T12:00:00.000Z".into(),
+            updated_at: "2026-09-20T12:00:00.000Z".into(),
+            completed_at: None,
+            origin: None,
+        }
+    }
+    fn goal_commit(task: TaskRecord) -> crate::goals::GoalCommit {
+        let mut s = goal_fixture();
+        s["revision"] = serde_json::json!(1);
+        s["operations"] = serde_json::json!(["op1"]);
+        s["goals"] = serde_json::json!([{"id":"g1","parentId":"","title":"发布","criterion":"升级验证通过","status":"active","reviewDate":""}]);
+        s["actions"] = serde_json::json!([{"id":"a1","goalId":"g1","taskId":task.id,"dependsOn":[],"minutes":25,"energy":"normal","blocker":"","deferredUntil":"","destination":"task","targetId":"","targetDate":""}]);
+        crate::goals::GoalCommit {
+            expected_revision: 0,
+            operation_id: "op1".into(),
+            next: s,
+            create_tasks: vec![task],
+            checks: vec![],
+            undo: false,
+        }
+    }
+    #[test]
+    fn goal_adoption_is_atomic_idempotent_and_survives_backup_restart() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let task = goal_task("11111111-1111-4111-8111-111111111111");
+        let reply = store.commit_goals(goal_commit(task.clone())).unwrap();
+        assert_eq!(reply.tasks.len(), 1);
+        let retry = store.commit_goals(goal_commit(task)).unwrap();
+        assert_eq!(retry.tasks.len(), 1);
+        assert_eq!(reply.state, retry.state);
+        let backup = store.export_backup().unwrap();
+        store.restore_backup(backup).unwrap();
+        drop(store);
+        let reopened = test_store(&temp);
+        assert_eq!(reopened.goal_state().unwrap().unwrap(), reply.state);
+        assert_eq!(reopened.list().unwrap().len(), 1);
+        let mut conflict = goal_commit(goal_task("22222222-2222-4222-8222-222222222222"));
+        conflict.operation_id = "different".into();
+        assert!(reopened
+            .commit_goals(conflict)
+            .unwrap_err()
+            .contains("已变化"));
+    }
+    #[test]
+    fn goal_failure_rolls_back_tasks_and_rejects_cycle() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let mut request = goal_commit(goal_task("11111111-1111-4111-8111-111111111111"));
+        let mut invalid = goal_task("22222222-2222-4222-8222-222222222222");
+        invalid.notes = "x".repeat(4001);
+        request.create_tasks.push(invalid);
+        assert!(store.commit_goals(request).is_err());
+        assert!(store.list().unwrap().is_empty());
+        assert!(store.goal_state().unwrap().is_none());
+        let mut request = goal_commit(goal_task("11111111-1111-4111-8111-111111111111"));
+        request.next["actions"][0]["dependsOn"] = serde_json::json!(["a1"]);
+        assert!(store.commit_goals(request).is_err());
+        assert!(store.list().unwrap().is_empty());
+    }
+    #[test]
+    fn goal_undo_refuses_to_remove_edited_tasks_and_preserves_user_work() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let task = goal_task("11111111-1111-4111-8111-111111111111");
+        let mut request = goal_commit(task.clone());
+        request.next["undo"] = serde_json::json!({"operationId":"op1","revision":1,"goals":[],"actions":[],"thoughts":[],"createdTasks":[task_ui(&task)],"proposalId":"p1"});
+        store.commit_goals(request).unwrap();
+        store
+            .update(&task.id, mutation("用户修改过", None))
+            .unwrap();
+        let mut next = goal_fixture();
+        next["revision"] = serde_json::json!(2);
+        next["operations"] = serde_json::json!(["op1", "undo1"]);
+        let undo = crate::goals::GoalCommit {
+            expected_revision: 1,
+            operation_id: "undo1".into(),
+            next,
+            create_tasks: vec![],
+            checks: vec![],
+            undo: true,
+        };
+        assert!(store.commit_goals(undo).unwrap_err().contains("已编辑"));
+        assert_eq!(store.get(&task.id).unwrap().title, "用户修改过");
+        assert_eq!(store.goal_state().unwrap().unwrap()["revision"], 1);
+    }
+
+    #[test]
+    fn goal_undo_after_restart_removes_only_untouched_batch_tasks() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let original = store.create(mutation("已有任务", None)).unwrap();
+        let task = goal_task("11111111-1111-4111-8111-111111111111");
+        let mut request = goal_commit(task.clone());
+        request.next["undo"] = serde_json::json!({"operationId":"op1","revision":1,"goals":[],"actions":[],"thoughts":[],"createdTasks":[task_ui(&task)],"proposalId":"p1"});
+        store.commit_goals(request).unwrap();
+        drop(store);
+        let reopened = test_store(&temp);
+        let mut next = goal_fixture();
+        next["revision"] = serde_json::json!(2);
+        next["operations"] = serde_json::json!(["op1", "undo1"]);
+        let undo = crate::goals::GoalCommit {
+            expected_revision: 1,
+            operation_id: "undo1".into(),
+            next,
+            create_tasks: vec![],
+            checks: vec![],
+            undo: true,
+        };
+        let result = reopened.commit_goals(undo).unwrap();
+        assert_eq!(result.tasks, vec![original]);
+        assert!(result.state["goals"].as_array().unwrap().is_empty());
     }
 
     #[test]

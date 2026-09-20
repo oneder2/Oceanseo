@@ -76,6 +76,7 @@ export function useDailyReminders(
   settings: ReminderSettings,
   events: LifeEvent[] = [],
   ready = true,
+  goalHint = "",
 ) {
   const [available, setAvailable] = useState(isTauri());
   useEffect(() => {
@@ -99,7 +100,7 @@ export function useDailyReminders(
             countdowns,
             settings.countdownAdvanceDays,
             events,
-          ),
+          ) + (goalHint ? ` ${goalHint}` : ""),
         });
         const now = new Date();
         // Collapse elapsed slots into one notification instead of a burst.
@@ -127,7 +128,7 @@ export function useDailyReminders(
       window.removeEventListener("focus", resume);
       document.removeEventListener("visibilitychange", resume);
     };
-  }, [settings, tasks, countdowns, events, ready]);
+  }, [settings, tasks, countdowns, events, ready, goalHint]);
   async function sendTest() {
     if (!isTauri()) return false;
     try {

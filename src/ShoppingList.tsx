@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { GoalSeed } from "./goals/model";
 import {
   Check,
   CheckCircle2,
@@ -23,6 +24,8 @@ import type { PurchaseItem, PurchaseItemDraft, PurchaseSource, ShoppingExportFor
 type SourceFilter = "all" | PurchaseSource;
 
 interface Props {
+  selectedId?: string;
+  seed?: GoalSeed;
   items: PurchaseItem[];
   onAdd: (draft: PurchaseItemDraft) => boolean;
   onUpdate: (id: string, draft: PurchaseItemDraft) => boolean;
@@ -34,13 +37,15 @@ interface Props {
 
 const emptyDraft: PurchaseItemDraft = { name: "", amount: "", category: "其他" };
 
-export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggle, onClearCompleted, onToast }: Props) {
+export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggle, onClearCompleted, onToast, selectedId, seed }: Props) {
   const [draft, setDraft] = useState<PurchaseItemDraft>(emptyDraft);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState<PurchaseItemDraft>(emptyDraft);
   const [filter, setFilter] = useState<SourceFilter>("all");
   const [exportFormat, setExportFormat] = useState<ShoppingExportFormat>("markdown");
   const [exporting, setExporting] = useState(false);
+  useEffect(()=>{if(seed)setDraft(seed.conditions?.shopping??{name:seed.title.slice(0,80),amount:"",category:"其他"});},[seed?.id]);
+  useEffect(()=>{if(selectedId){setFilter("all");requestAnimationFrame(()=>document.getElementById(`purchase-${selectedId}`)?.scrollIntoView({block:"nearest"}));}},[selectedId]);
 
   const categories = useMemo(
     () => Array.from(new Set([...DEFAULT_PURCHASE_CATEGORIES, ...items.map((item) => item.category)])),
@@ -151,7 +156,7 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
                   <span className="purchase-row-actions"><button type="submit" aria-label="保存修改" title="保存修改"><Save size={15} /></button><button type="button" onClick={() => setEditingId(null)} aria-label="取消修改" title="取消修改"><X size={15} /></button></span>
                 </form>
               ) : (
-                <article className={`purchase-row source-${item.source} ${item.checked ? "is-checked" : ""}`} key={item.id}>
+                <article id={`purchase-${item.id}`} className={`purchase-row source-${item.source} ${item.checked ? "is-checked" : ""} ${selectedId===item.id?"goal-target-selected":""}`} key={item.id}>
                   <span className="purchase-source-rail" aria-hidden="true" />
                   <button className="purchase-check-button" type="button" onClick={() => onToggle(item.id)} aria-label={item.checked ? `恢复 ${item.name}` : `已采购 ${item.name}`}>
                     {item.checked ? <CheckCircle2 size={19} /> : <Circle size={19} />}

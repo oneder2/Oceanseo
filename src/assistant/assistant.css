@@ -550,3 +550,4 @@
     animation: none;
   }
 }
+.assistant-organize { display:block; width:100%; padding:9px; color:#3c7062; font-size:12px; text-align:center; border-top:1px solid #d7e3d9; }

@@ -3,6 +3,7 @@ import { validDate } from "../life/model";
 
 export const PAGES: Record<View, string> = {
   overview: "总览",
+  goals: "想法与目标",
   today: "今天",
   all: "所有计划",
   calendar: "计划日历",
@@ -31,6 +32,7 @@ export interface Persona {
 }
 export type AgentAction =
   | { id: string; type: "navigate"; view: View }
+  | { id: string; type: "organize"; text: string }
   | { id: string; type: "task_draft"; draft: TaskDraft };
 export type SavedAction = AgentAction & {
   status: "pending" | "opened" | "dismissed";
@@ -83,7 +85,7 @@ export function validAction(v: unknown): v is AgentAction {
     !!a.id &&
     (a.type === "navigate"
       ? typeof a.view === "string" && Object.hasOwn(PAGES, a.view)
-      : a.type === "task_draft" && validDraft(a.draft))
+      : a.type === "organize" ? str(a.text,4000) && !!a.text.trim() : a.type === "task_draft" && validDraft(a.draft))
   );
 }
 export function isAssistantState(v: unknown): v is AssistantState {
@@ -141,7 +143,7 @@ export function historyForRequest(messages: Message[]) {
           m.actions
             .map(
               (a) =>
-                `${a.type === "navigate" ? PAGES[a.view] : a.draft.title}：${a.status === "opened" ? "用户已打开" : a.status === "dismissed" ? "用户已忽略" : "等待用户选择"}`,
+                `${a.type === "navigate" ? PAGES[a.view] : a.type === "organize" ? "想法已准备交给整理台" : a.draft.title}：${a.status === "opened" ? "用户已打开" : a.status === "dismissed" ? "用户已忽略" : "等待用户选择"}`,
             )
             .join("；")
         : ""),
