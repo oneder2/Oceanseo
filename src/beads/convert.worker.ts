@@ -18,6 +18,8 @@ self.onmessage = (
           event.data.options.width,
           event.data.options.height,
           event.data.options.mode,
+          event.data.options.cleanup > 0 &&
+            event.data.options.boundaryCleanup !== false,
         ),
         event.data.options,
       ),

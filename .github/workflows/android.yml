@@ -1,0 +1,49 @@
+name: Android internal build
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - 'services/sync/**'
+      - 'services/accounts/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'vite.config.ts'
+      - 'package*.json'
+      - '.github/workflows/android.yml'
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0' 'ndk;28.2.13676358'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:sync-server
+      - run: npm run test:accounts-server
+      - run: npm run build
+      - run: npm run test:bundle
+      - run: NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" npm run android:build
+      - run: ./gradlew :app:testUniversalDebugUnitTest -x rustBuildArm64Debug -PabiList=arm64-v8a -ParchList=arm64 -PtargetList=aarch64 --console=plain
+        working-directory: src-tauri/gen/android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tideplan-Android-arm64-INTERNAL-DEBUG
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14

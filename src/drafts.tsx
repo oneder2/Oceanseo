@@ -1,3 +1,4 @@
+import { profileLocalStorage as localStorage } from "./profileStorage";
 import { useRef, useState, type SetStateAction } from "react";
 const PREFIX = "tideplan.draft.v1:";
 export function encodeDraft(value: unknown) {

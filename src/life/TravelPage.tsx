@@ -208,11 +208,7 @@ export default function TravelPage({
       <div className="life-intro">
         <MapPin />
         <div>
-          <strong>从同行的人，规划要走的路</strong>
-          <p>
-            预算按全体参与人的全程总额计算。AI
-            给出建议，地点和路线由地图服务核实。
-          </p>
+          <strong>{data.trips.length} 个已保存行程</strong>
         </div>
         <button className="secondary-button" onClick={onSettings}>
           AI 与地图配置
@@ -301,6 +297,8 @@ export default function TravelPage({
         <aside className="life-card travel-brief">
           <h2>旅行条件</h2>
           <fieldset disabled={job.busy}>
+            <fieldset className="life-form-section">
+              <legend>行程与目的地</legend>
             <label>
               行程名称
               <input
@@ -329,6 +327,9 @@ export default function TravelPage({
                 }
               />
             </label>
+            </fieldset>
+            <fieldset className="life-form-section">
+              <legend>时间与预算</legend>
             <DatePicker
               label="出发日期"
               value={trip.startDate}
@@ -354,6 +355,10 @@ export default function TravelPage({
                 }
               />
             </label>
+            <p className="life-muted">全体同行者、全程合计</p>
+            </fieldset>
+            <fieldset className="life-form-section">
+              <legend>同行者与偏好</legend>
             <PeoplePicker
               people={data.people}
               ids={trip.participantIds}
@@ -408,6 +413,7 @@ export default function TravelPage({
                 }
               />
             </label>
+            </fieldset>
             <button className="primary-button" onClick={() => void generate()}>
               <Sparkles size={16} />
               Agent 制定行程

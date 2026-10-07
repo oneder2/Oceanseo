@@ -1,4 +1,5 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import AiImagePanel from "./AiImagePanel";
 import { validSize } from "./model";
 import { BRANDS, PALETTE_NOTICE, type BeadBrand } from "./palettes";
 import type { useImageImport } from "./useImageImport";
@@ -6,16 +7,20 @@ import type { useImageImport } from "./useImageImport";
 export default function ImportPanel({
   importer,
   disabled,
+  onSettings,
 }: {
   importer: ReturnType<typeof useImageImport>;
   disabled: boolean;
+  onSettings: () => void;
 }) {
   const file = useRef<HTMLInputElement>(null);
+  const [method, setMethod] = useState<"local" | "ai">("local");
   const { source, options, setOptions, busy } = importer;
   return (
     <div className="bead-panel-content">
       <p className="bead-help">
-        图片在本机处理。原图不会被修改，应用导入结果后可撤销。
+        本机转图适合已有插画；真实人物或风景可先用 AI
+        提炼主体。应用前可预览，原图不变。
       </p>
       <input
         ref={file}
@@ -42,6 +47,37 @@ export default function ImportPanel({
           </figcaption>
         </figure>
       )}
+      <div
+        className="bead-import-method"
+        role="group"
+        aria-label="图像转换方式"
+      >
+        <button
+          aria-pressed={method === "local"}
+          disabled={disabled || busy}
+          onClick={() => {
+            setMethod("local");
+            importer.ai.setUsePrepared(false);
+          }}
+        >
+          本机转图
+        </button>
+        <button
+          aria-pressed={method === "ai"}
+          disabled={disabled || busy}
+          onClick={() => setMethod("ai")}
+        >
+          AI 提炼主体
+        </button>
+      </div>
+      <div hidden={method !== "ai"}>
+        <AiImagePanel
+          importer={importer}
+          disabled={disabled}
+          onSettings={onSettings}
+        />
+      </div>
+      <h3>{method === "ai" ? "3 · 转为拼豆图纸" : "网格与配色"}</h3>
       <fieldset disabled={disabled || busy}>
         <label>
           导入模式
@@ -153,6 +189,23 @@ export default function ImportPanel({
                 <option value={2}>较强 · 简化色块</option>
               </select>
             </label>
+            <label className="bead-check">
+              <input
+                type="checkbox"
+                checked={options.boundaryCleanup !== false}
+                disabled={!options.cleanup}
+                onChange={(e) =>
+                  setOptions((o) => ({
+                    ...o,
+                    boundaryCleanup: e.target.checked,
+                  }))
+                }
+              />
+              交界净化 · 清理混色线与小杂点
+            </label>
+            <p className="bead-help">
+              在缩图和最终豆色分配后处理交界，保留深色轮廓与高光。较强模式也会精简微小有色装饰，可关闭净化对比。
+            </p>
           </>
         ) : (
           <p className="bead-help">

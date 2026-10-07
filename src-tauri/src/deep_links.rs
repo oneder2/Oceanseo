@@ -98,12 +98,14 @@ pub fn receive_url<R: Runtime>(app: &AppHandle<R>, raw_url: &str) {
 
     app.state::<DeepLinkQueue>().push(message);
     let _ = app.emit(DEEP_LINK_EVENT, ());
+    #[cfg(desktop)]
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.set_focus();
     }
 }
 
+#[cfg(desktop)]
 pub fn deep_link_argument(args: &[String]) -> Option<&str> {
     args.iter()
         .skip(1)

@@ -1,0 +1,16 @@
+[Unit]
+Description=Oceanseo private sync database backup
+After=tideplan-sync.service
+Requires=tideplan-sync.service
+
+[Service]
+Type=oneshot
+User=tideplan-sync
+Group=tideplan-sync
+ExecStart=/opt/tideplan-sync/backup-daily.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tideplan-sync /var/backups/tideplan-sync

@@ -1,6 +1,6 @@
 export type Horizon = "short" | "mid" | "long";
 export type Priority = "normal" | "important";
-export type View = "overview" | "goals" | "today" | "all" | "calendar" | "countdowns" | "meal-planner" | "shopping-list" | "work-monitor" | "completed" | "bead-studio" | "people" | "fitness" | "travel";
+export type View = "overview" | "goals" | "today" | "all" | "calendar" | "countdowns" | "meal-planner" | "shopping-list" | "work-monitor" | "completed" | "bead-studio" | "people" | "fitness" | "travel" | "infrastructure";
 
 export interface TaskOrigin {
   kind: "local" | "migration" | "deep_link";

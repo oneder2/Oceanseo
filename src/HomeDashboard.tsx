@@ -12,18 +12,23 @@ import {
   ShoppingBasket,
 } from "lucide-react";
 import { countdownDays } from "./countdownStore";
+import type { HostEvent } from "./infrastructure/model";
+import { platform } from "./platform";
 import { dateFromKey, dateKey } from "./dateUtils";
 import type { WorkDashboard } from "./workMonitorStore";
 import { addDays, type LifeEvent } from "./life/model";
 import type { Countdown, MealPlan, PurchaseItem, ReminderSettings, Task, View } from "./types";
 
 interface HomeDashboardProps {
+  hostEvents?: HostEvent[];
+  onOpenHost?: (event: HostEvent) => void;
   tasks: Task[];
   countdowns: Countdown[];
   purchaseItems: PurchaseItem[];
   mealPlan: MealPlan | null;
   workDashboard: WorkDashboard | null;
   reminderSettings: ReminderSettings;
+  reminderAvailable?: boolean;
   onOpenTask: (task: Task) => void;
   onOpenCountdown: (countdown: Countdown) => void;
   onNavigate: (view: View) => void;
@@ -51,12 +56,15 @@ function nextReminderLabel(settings: ReminderSettings) {
 }
 
 export default function HomeDashboard({
+  hostEvents = [],
+  onOpenHost,
   tasks,
   countdowns,
   purchaseItems,
   mealPlan,
   workDashboard,
   reminderSettings,
+  reminderAvailable = true,
   onOpenTask,
   onOpenCountdown,
   onNavigate,
@@ -89,6 +97,7 @@ export default function HomeDashboard({
 
   return (
     <section className="home-dashboard" aria-label="今日总览">
+      {!!hostEvents.filter(e=>e.date<=addDays(today,e.remindDays)).length&&<section className="infra-attention" aria-label="主机期限提醒"><header><strong>主机与服务 · 近期需处理</strong><button className="secondary-button" onClick={()=>onNavigate("infrastructure")}>打开面板</button></header>{hostEvents.filter(e=>e.date<=addDays(today,e.remindDays)).slice(0,3).map(e=><button key={e.id} className="infra-text-button" onClick={()=>onOpenHost?.(e)}>{e.title} · {e.date}{e.date<today?"（已逾期）":""}</button>)}</section>}
       <nav className="rhythm-route" aria-label="今日状态导航">
         <button type="button" onClick={() => onNavigate("today")}>
           <span className="route-icon route-coral"><ListTodo size={16} /></span>
@@ -105,11 +114,11 @@ export default function HomeDashboard({
           <span><small>LIST</small><strong>{uncheckedPurchases} 项待采购</strong></span>
           <ArrowRight size={14} />
         </button>
-        <button type="button" onClick={() => onNavigate("work-monitor")}>
+        {platform.workMonitor && <button type="button" onClick={() => onNavigate("work-monitor")}>
           <span className="route-icon route-sage"><FolderGit2 size={16} /></span>
           <span><small>WORK</small><strong>{pendingDrafts ? `${pendingDrafts} 项待审核` : workDashboard ? "同步状态平稳" : "等待项目检查"}</strong></span>
           <ArrowRight size={14} />
-        </button>
+        </button>}
       </nav>
 
       <div className="home-grid">
@@ -142,7 +151,7 @@ export default function HomeDashboard({
             )}
           </div>
           <footer className="home-focus-footer">
-            <span><Clock3 size={13} />{nextReminderLabel(reminderSettings)}</span>
+            <span><Clock3 size={13} />{platform.mobile && reminderSettings.enabled && !reminderAvailable ? "提醒待授权 · 前往设置开启" : nextReminderLabel(reminderSettings)}</span>
             <button type="button" onClick={() => onNavigate("all")}>查看所有计划<ArrowRight size={13} /></button>
           </footer>
         </section>
@@ -180,7 +189,7 @@ export default function HomeDashboard({
             </button>
           </section>
 
-          <section className="home-side-section home-work">
+          {platform.workMonitor && <section className="home-side-section home-work">
             <header className="home-section-head compact">
               <div><span>项目脉搏</span><h2>工作观察</h2></div>
               <button type="button" onClick={() => onNavigate("work-monitor")}>进入<ArrowRight size={13} /></button>
@@ -192,7 +201,7 @@ export default function HomeDashboard({
                 <small>{pendingDrafts ? `${pendingDrafts} 份进展草稿需要你确认` : workDashboard?.config.enabled ? "自动检查已启用" : "自动检查尚未启用"}</small>
               </span>
             </button>
-          </section>
+          </section>}
         </div>
       </div>
     </section>

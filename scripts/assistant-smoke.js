@@ -1,3 +1,4 @@
+// Historical assistant sidepane only. For 0.12 use conversation-agent-smoke.js.
 // Run in a NEW isolated playwright-cli session on the built preview server.
 // The two operation cards below are explicit test fixtures, not live AI output.
 // playwright-cli -s=assistant-smoke run-code "$(cat scripts/assistant-smoke.js)"

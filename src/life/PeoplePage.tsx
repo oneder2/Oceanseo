@@ -77,8 +77,7 @@ export default function PeoplePage({
       <div className="life-intro">
         <Users />
         <div>
-          <strong>让计划记得每一个人</strong>
-          <p>生日与个人偏好保存于本机。生成计划时，仅使用你选中的人物画像。</p>
+          <strong>{data.people.filter(person => !person.archived).length} 份人物档案</strong>
         </div>
       </div>
       <div className="life-split">

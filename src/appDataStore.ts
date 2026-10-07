@@ -1,3 +1,4 @@
+import { profileLocalStorage as localStorage } from "./profileStorage";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { ReliableState } from "./reliableState";
 
@@ -12,17 +13,28 @@ export const APP_STATE_KEYS = {
   life: "tideplan.life.v1",
   assistant: "tideplan.assistant.v1",
   goals: "tideplan.goals.v1",
+  infrastructure: "tideplan.infrastructure.v1",
 } as const;
 
 type AppStateKey = (typeof APP_STATE_KEYS)[keyof typeof APP_STATE_KEYS];
 let restoring = false;
 export function assertAppWritable() {
-  if (restoring) throw Error("正在恢复备份，请稍后再保存目标");
+  if (restoring) throw Error("正在合并或恢复数据，请完成后再保存目标");
 }
 export async function withAppRestore<T>(restore: () => Promise<T>) {
+  return withAppDataGate(restore, () => true);
+}
+export async function withAppDataGate<T>(action: () => Promise<T>, keepLocked: (result: T) => boolean) {
+  if (restoring) throw Error("restore_in_progress");
   restoring = true;
-  try { await flushAppData(); return await appPersistence.exclusive(restore, true); }
-  catch (error) { restoring = false; throw error; }
+  let retained = false;
+  try {
+    await flushAppData();
+    return await appPersistence.exclusive(action, result => {
+      retained = keepLocked(result);
+      return retained;
+    });
+  } finally { if (!retained) restoring = false; }
 }
 export const appPersistence = new ReliableState(
   localStorage,

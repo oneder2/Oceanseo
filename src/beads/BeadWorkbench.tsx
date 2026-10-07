@@ -125,7 +125,11 @@ function DocumentTitle({
   );
 }
 
-export default function BeadWorkbench() {
+export default function BeadWorkbench({
+  onSettings = () => {},
+}: {
+  onSettings?: () => void;
+}) {
   const { state, dispatch, saveStatus } = useBeadDocument();
   const pattern = state.present;
   const [tool, setTool] = useState<Tool>("pan"),
@@ -434,6 +438,7 @@ export default function BeadWorkbench() {
             </fieldset>
             <div hidden={panel !== "import"} id="bead-panel-import">
               <ImportPanel
+                onSettings={onSettings}
                 importer={importer}
                 disabled={exporting || !!state.proposal || gesture}
               />

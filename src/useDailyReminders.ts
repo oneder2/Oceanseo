@@ -1,15 +1,19 @@
-import { useEffect, useState } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { profileLocalStorage as localStorage } from "./profileStorage";
+import { useEffect, useRef, useState } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   isPermissionGranted,
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
+import { platform } from "./platform";
+import { configureMobileReminders, mobileReminderMessage, type MobileReminderStatus } from "./mobileReminders";
 import { dateKey } from "./dateUtils";
 import { countdownDays } from "./countdownStore";
 import type { Countdown, ReminderSettings, Task } from "./types";
 import type { LifeEvent } from "./life/model";
 import { dueReminder } from "./reminderPolicy";
+import { attention, type Infrastructure } from "./infrastructure/model";
 const LEDGER = "tideplan.notification-ledger.v2";
 function delivered(): string[] {
   try {
@@ -30,6 +34,7 @@ export function reminderBody(
   countdowns: Countdown[],
   advanceDays: number,
   events: LifeEvent[] = [],
+  infrastructure?: Infrastructure,
 ) {
   const today = dateKey(),
     active = tasks.filter((t) => !t.completedAt),
@@ -48,6 +53,8 @@ export function reminderBody(
   ).length;
   if (training) parts.push(`${training} 项训练待清点`);
   if (travel) parts.push(`${travel} 项今日旅行安排`);
+  const hostCount = infrastructure ? attention(infrastructure, today).length : 0;
+  if (hostCount) parts.push(`主机与服务有 ${hostCount} 项待留意，请打开面板核对`);
   const upcoming = countdowns.filter((c) => {
     const d = countdownDays(c.targetDate, today);
     return d >= 0 && d <= advanceDays;
@@ -77,10 +84,38 @@ export function useDailyReminders(
   events: LifeEvent[] = [],
   ready = true,
   goalHint = "",
+  infrastructure?: Infrastructure,
 ) {
-  const [available, setAvailable] = useState(isTauri());
+  const [available, setAvailable] = useState(isTauri() && !platform.mobile);
+  const currentSettings = useRef(settings);
+  currentSettings.current = settings;
+  const [mobileStatus, setMobileStatus] = useState("正在检查系统提醒…");
+  const [mobileDetails, setMobileDetails] = useState<MobileReminderStatus | null>(null);
+  const [mobileRefresh, setMobileRefresh] = useState(0);
+  const [mobileChecking, setMobileChecking] = useState(false);
   useEffect(() => {
-    if (!isTauri() || !settings.enabled || !ready) return;
+    if (platform.name !== "android" || !ready) return;
+    let active = true;
+    const update = () => {
+      setMobileChecking(true);
+      void configureMobileReminders(settings).then(status => {
+        if (!active) return;
+        setAvailable(status.permission);
+        setMobileDetails(status);
+        setMobileStatus(mobileReminderMessage(settings.enabled, status));
+      }).catch(() => { if (active) {
+        setMobileDetails(null);
+        setMobileStatus("无法检查系统提醒，请刷新状态重试。");
+      } }).finally(() => { if (active) setMobileChecking(false); });
+    };
+    update();
+    const resume = () => { if (document.visibilityState === "visible") update(); };
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", resume);
+    return () => { active = false; window.removeEventListener("focus", resume); document.removeEventListener("visibilitychange", resume); };
+  }, [ready, settings.enabled, settings.times[0], settings.times[1], mobileRefresh]);
+  useEffect(() => {
+    if (!isTauri() || platform.mobile || !settings.enabled || !ready) return;
     let cancelled = false,
       checking = false;
     async function check() {
@@ -100,6 +135,7 @@ export function useDailyReminders(
             countdowns,
             settings.countdownAdvanceDays,
             events,
+            infrastructure,
           ) + (goalHint ? ` ${goalHint}` : ""),
         });
         const now = new Date();
@@ -128,13 +164,29 @@ export function useDailyReminders(
       window.removeEventListener("focus", resume);
       document.removeEventListener("visibilitychange", resume);
     };
-  }, [settings, tasks, countdowns, events, ready, goalHint]);
+  }, [settings, tasks, countdowns, events, ready, goalHint, infrastructure]);
   async function sendTest() {
     if (!isTauri()) return false;
     try {
       if (!(await ensurePermission())) {
         setAvailable(false);
+        if (platform.name === "android") setMobileRefresh(value => value + 1);
         return false;
+      }
+      if (platform.name === "android") {
+        const status = await configureMobileReminders(currentSettings.current);
+        setAvailable(status.permission);
+        setMobileDetails(status);
+        setMobileStatus(mobileReminderMessage(currentSettings.current.enabled, status));
+        if (!status.permission) {
+          setMobileStatus("通知权限或“每日计划提醒”频道被关闭，请在 Android 系统设置中开启。");
+          return false;
+        }
+        await invoke("plugin:notification|notify", { options: {
+          id: 9199, channelId: "tideplan.daily.v1", icon: "ic_notification",
+          title: "潮汐计划 · 测试通知", body: "通知已开启。每天按设定时间提醒你查看计划。",
+        } });
+        return true;
       }
       sendNotification({
         title: "潮汐计划",
@@ -143,6 +195,7 @@ export function useDailyReminders(
           countdowns,
           settings.countdownAdvanceDays,
           events,
+          infrastructure,
         ),
       });
       setAvailable(true);
@@ -152,5 +205,5 @@ export function useDailyReminders(
       return false;
     }
   }
-  return { available, sendTest };
+  return { available, sendTest, mobileStatus, mobileDetails, mobileChecking, refreshMobile: () => setMobileRefresh(value => value + 1) };
 }

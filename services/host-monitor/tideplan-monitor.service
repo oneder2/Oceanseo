@@ -1,0 +1,17 @@
+[Unit]
+Description=Tideplan read-only host metrics
+After=network.target
+
+[Service]
+DynamicUser=true
+EnvironmentFile=/etc/tideplan-monitor.env
+ExecStart=/usr/bin/python3 /opt/tideplan-monitor/collector.py
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

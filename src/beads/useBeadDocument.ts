@@ -1,3 +1,4 @@
+import { profileLocalStorage as localStorage } from "../profileStorage";
 import { useEffect, useReducer, useRef, useState } from "react";
 import { APP_STATE_KEYS, persistAppState, registerStateFlusher } from "../appDataStore";
 import { blankPattern, isPattern } from "./model";

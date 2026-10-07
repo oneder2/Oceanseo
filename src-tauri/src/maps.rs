@@ -1,3 +1,4 @@
+use crate::credentials::CredentialCipher;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 #[cfg(unix)]
@@ -12,6 +13,7 @@ use std::{
 
 pub struct MapStore {
     path: PathBuf,
+    cipher: CredentialCipher,
     key: RwLock<String>,
 }
 #[derive(Serialize)]
@@ -21,19 +23,29 @@ pub struct MapSummary {
     key_hint: Option<String>,
 }
 impl MapStore {
+    #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
+        Self::open_with_cipher(path, CredentialCipher::plain())
+    }
+    pub fn open_with_cipher(path: &Path, cipher: CredentialCipher) -> Result<Self, String> {
         let key = if path.exists() {
             serde_json::from_str::<String>(
-                &fs::read_to_string(path).map_err(|_| "地图配置读取失败")?,
+                &cipher.decode(&fs::read_to_string(path).map_err(|_| "地图配置读取失败")?)?,
             )
             .map_err(|_| "地图配置格式错误")?
         } else {
             String::new()
         };
-        Ok(Self {
+        let store = Self {
             path: path.into(),
+            cipher,
             key: RwLock::new(key),
-        })
+        };
+        #[cfg(target_os = "android")]
+        if path.exists() {
+            store.save(None, false)?;
+        }
+        Ok(store)
     }
     fn summary(&self) -> Result<MapSummary, String> {
         let key = self.key.read().map_err(|_| "地图配置正忙")?;
@@ -77,9 +89,13 @@ impl MapStore {
         #[cfg(unix)]
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
             .map_err(|_| "地图配置权限设置失败")?;
-        file.write_all(serde_json::to_string(&next).unwrap().as_bytes())
-            .and_then(|_| file.sync_all())
-            .map_err(|_| "地图配置保存失败")?;
+        file.write_all(
+            self.cipher
+                .encode(&serde_json::to_string(&next).unwrap())?
+                .as_bytes(),
+        )
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "地图配置保存失败")?;
         fs::rename(temporary, &self.path).map_err(|_| "地图配置保存失败")?;
         *stored = next;
         drop(stored);
@@ -99,7 +115,7 @@ pub fn get_map_settings(store: tauri::State<'_, MapStore>) -> Result<MapSummary,
     store.summary()
 }
 #[tauri::command]
-pub fn save_map_settings(
+pub async fn save_map_settings(
     key: Option<String>,
     clear: bool,
     store: tauri::State<'_, MapStore>,

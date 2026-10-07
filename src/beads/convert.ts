@@ -1,6 +1,7 @@
 import { MAX_COLORS, validSize, type BeadPattern } from "./model";
 import { distance, lab, smoothPhoto, regularizeLabels } from "./denoise";
 import { colorDistance } from "./colorDistance";
+import { cleanBoundaryRegions } from "./boundaryCleanup";
 import {
   compactPalette,
   isBrand,
@@ -16,6 +17,7 @@ export interface ConvertOptions {
   mode: "pixel" | "photo";
   colors: number;
   cleanup: number;
+  boundaryCleanup?: boolean;
   brand?: BeadBrand | "custom";
 }
 type Point = { rgb: number[]; lab: number[]; weight: number };
@@ -187,7 +189,7 @@ export function convertImage(
   const initial = smooth.map((rgb) =>
     rgb ? nearest(lab(rgb), paletteLab, metric) : -1,
   );
-  const cells = regularizeLabels(
+  const regularized = regularizeLabels(
     initial,
     smooth,
     paletteLab,
@@ -196,6 +198,16 @@ export function convertImage(
     options.cleanup,
     metric,
   );
+  const cells =
+    options.boundaryCleanup === false
+      ? regularized
+      : cleanBoundaryRegions(
+          regularized,
+          pixels,
+          width,
+          height,
+          options.cleanup,
+        );
   return compactPalette({
     version: 1,
     title: "图片转图",

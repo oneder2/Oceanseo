@@ -1,3 +1,4 @@
+import { profileLocalStorage as localStorage } from "./profileStorage";
 import { useEffect, useMemo, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import {

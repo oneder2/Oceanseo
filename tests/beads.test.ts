@@ -1,8 +1,14 @@
 import test from "node:test";
+import "./calendar-events.test";
 import "./bead-document.test";
 import "./life.test";
 import "./goals.test";
 import "./goal-handoff.test";
+import "./goal-dialogue.test";
+import "./android-features.test";
+import "./infrastructure.test";
+import "./profile-storage.test";
+import "./automatic-sync.test";
 import assert from "node:assert/strict";
 import { convertImage, type ConvertOptions } from "../src/beads/convert";
 import {

@@ -1,0 +1,23 @@
+[Unit]
+Description=Tideplan private beta sync
+After=network.target
+
+[Service]
+Type=simple
+User=tideplan-sync
+Group=tideplan-sync
+WorkingDirectory=/opt/tideplan-sync
+EnvironmentFile=/etc/tideplan-sync.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/tideplan-sync/server.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tideplan-sync
+
+[Install]
+WantedBy=multi-user.target

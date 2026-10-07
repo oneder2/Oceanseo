@@ -1,0 +1,66 @@
+{
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 60s
+			write 60s
+			idle 2m
+		}
+	}
+}
+
+oceanseo.gellaronline.cc {
+	header {
+		Cache-Control "no-store"
+		X-Content-Type-Options "nosniff"
+	}
+	request_body {
+		max_size 17MB
+	}
+	handle /v2/* {
+		reverse_proxy 127.0.0.1:4791 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 20s
+				max_conns_per_host 16
+			}
+		}
+	}
+	handle /v1/vault {
+		reverse_proxy 127.0.0.1:4789 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 20s
+				max_conns_per_host 8
+			}
+		}
+	}
+	handle /metrics {
+		reverse_proxy 127.0.0.1:4790 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 10s
+				max_conns_per_host 4
+			}
+		}
+	}
+	handle /health {
+		respond "ok" 200
+	}
+	handle_path /downloads/* {
+		root * /var/www/oceanseo/downloads
+		header Content-Disposition "attachment"
+		file_server
+	}
+	handle {
+		root * /var/www/oceanseo/current
+		header {
+			Cache-Control "public, max-age=300, no-transform"
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		}
+		encode gzip zstd
+		file_server
+	}
+}

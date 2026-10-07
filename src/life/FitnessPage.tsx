@@ -182,8 +182,7 @@ export default function FitnessPage({
       <div className="life-intro">
         <Dumbbell />
         <div>
-          <strong>训练有计划，完成有记录</strong>
-          <p>按项目记录每组实际完成量，日历同步显示每个训练日。</p>
+          <strong>{data.training.filter(plan => !plan.archived).length} 个进行中的周期</strong>
         </div>
         <button className="secondary-button" onClick={onSettings}>
           AI 配置
@@ -225,6 +224,8 @@ export default function FitnessPage({
             <>
               <h2>制定训练周期</h2>
               <fieldset disabled={job.busy}>
+                <fieldset className="life-form-section">
+                  <legend>计划与执行人</legend>
                 <div className="life-form-grid">
                   <label>
                     计划名称
@@ -254,6 +255,11 @@ export default function FitnessPage({
                         ))}
                     </select>
                   </label>
+                </div>
+                </fieldset>
+                <fieldset className="life-form-section">
+                  <legend>目标与训练周期</legend>
+                <div className="life-form-grid">
                   <DatePicker
                     label="训练开始日期"
                     value={draft.startDate}
@@ -299,7 +305,9 @@ export default function FitnessPage({
                     />
                   </label>
                 </div>
-                <h3>训练项目</h3>
+                </fieldset>
+                <fieldset className="life-form-section">
+                <legend>训练项目</legend>
                 {draft.exercises.map((ex, i) => (
                   <div className="exercise-row" key={ex.id}>
                     <label>
@@ -435,6 +443,7 @@ export default function FitnessPage({
                 {draft.advice && (
                   <div className="life-prose">{draft.advice}</div>
                 )}
+                </fieldset>
               </fieldset>
             </>
           ) : plan ? (

@@ -3,6 +3,100 @@ import assert from "node:assert/strict";
 import { convertImage } from "../src/beads/convert";
 import { resampleImage } from "../src/beads/resample";
 import { colorDistance } from "../src/beads/colorDistance";
+import { boundaryScene, diagonalScene } from "./fixtures/bead-boundaries";
+import { cleanBoundaryRegions } from "../src/beads/boundaryCleanup";
+
+test("final cleanup removes two- and three-colour junction ribbons across custom and real-brand palettes", () => {
+  const fixture = boundaryScene();
+  for (const brand of ["custom", "MARD", "COCO"] as const) {
+    const result = convertImage(fixture.data, {
+      width: 64,
+      height: 64,
+      colors: 24,
+      cleanup: 2,
+      mode: "photo",
+      brand,
+    });
+    const body = new Set([
+      result.cells[10 * 64 + 20],
+      result.cells[10 * 64 + 45],
+      result.cells[45 * 64 + 45],
+    ]);
+    assert.equal(
+      fixture.seams.filter((i) => !body.has(result.cells[i])).length,
+      0,
+      `${brand}: remaining mixed boundary beads`,
+    );
+    const black = result.cells[10 * 64 + 12];
+    assert.ok(!body.has(black));
+    for (let y = 5; y < 60; y++) assert.equal(result.cells[y * 64 + 12], black);
+    assert.ok(!body.has(result.cells[16 * 64 + 44]), "highlight must survive");
+    assert.ok(result.palette.length <= 24);
+  }
+});
+
+test("edge-supported sampling does not invent colours at multi-region diagonals", () => {
+  const f = diagonalScene();
+  const averaged = resampleImage(f.data, f.width, f.height, 48, 48, "photo");
+  const supported = resampleImage(
+    f.data,
+    f.width,
+    f.height,
+    48,
+    48,
+    "photo",
+    true,
+  );
+  const foreign = (data: Uint8ClampedArray) =>
+    Array.from({ length: 48 * 48 }, (_, i) => i).filter(
+      (i) =>
+        !f.colors.some((c) =>
+          c.every((v, k) => Math.abs(data[i * 4 + k] - v) <= 1),
+        ),
+    ).length;
+  assert.ok(
+    foreign(averaged) > 50,
+    "fixture must expose the old area-average fringe",
+  );
+  assert.equal(foreign(supported), 0);
+  assert.deepEqual(
+    supported,
+    resampleImage(f.data, f.width, f.height, 48, 48, "photo", true),
+  );
+});
+
+test("boundary cleanup leaves transparency, solid colour islands and contrast extrema intact", () => {
+  const cells = Array.from({ length: 81 }, (_, i) => (i % 9 === 0 ? -1 : 0));
+  for (let y = 3; y <= 5; y++)
+    for (let x = 3; x <= 5; x++) cells[y * 9 + x] = 1;
+  cells[11] = 2;
+  cells[16] = 3;
+  const colors = [
+    [140, 140, 140],
+    [140, 80, 170],
+    [0, 0, 0],
+    [255, 255, 255],
+  ];
+  const pixels = cells.map((i) => (i < 0 ? null : colors[i]));
+  assert.deepEqual(cleanBoundaryRegions(cells, pixels, 9, 9, 2), cells);
+  assert.deepEqual(cleanBoundaryRegions(cells, pixels, 9, 9, 0), cells);
+});
+
+test("boundary cleanup does not split an ambiguous thin region into new isolated remnants", () => {
+  const w = 11,
+    h = 11,
+    cells: number[] = [],
+    pixels: number[][] = [];
+  const a = [192, 76, 60],
+    b = [64, 120, 176],
+    mix = a.map((v, i) => (v + b[i]) / 2);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      cells.push(x < 5 ? 0 : x > 5 ? 1 : 2);
+      pixels.push(x < 5 ? a : x > 5 ? b : y === 5 ? [245, 245, 245] : mix);
+    }
+  assert.deepEqual(cleanBoundaryRegions(cells, pixels, w, h, 2), cells);
+});
 
 test("CIEDE2000 agrees with published Sharma reference pairs, including zero chroma", () => {
   const pairs = [
@@ -141,6 +235,10 @@ test("area sampling averages high frequency texture without hidden transparent R
   );
   assert.deepEqual(
     [...resampleImage(checker, 8, 8, 1, 1, "photo")],
+    [128, 0, 0, 255],
+  );
+  assert.deepEqual(
+    [...resampleImage(checker, 8, 8, 1, 1, "photo", true)],
     [128, 0, 0, 255],
   );
   const alpha = new Uint8ClampedArray([

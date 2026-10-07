@@ -1,0 +1,9 @@
+metrics.example.com {
+    @metrics path /metrics
+    handle @metrics {
+        reverse_proxy 127.0.0.1:4790
+    }
+    handle {
+        respond 404
+    }
+}

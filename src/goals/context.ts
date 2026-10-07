@@ -3,6 +3,7 @@ import { trainingDates } from "../life/model";
 import type { PurchaseItem, Task } from "../types";
 import type { WorkDashboard } from "../workMonitorStore";
 import { dateKey } from "../dateUtils";
+import { platform } from "../platform";
 import type { Destination, GoalState } from "./model";
 export interface Target {
   id: string;
@@ -55,6 +56,8 @@ export function planningContext(
 ) {
   return {
     today: dateKey(),
+    platform: platform.name,
+    availableDestinations: platform.mobile ? ["task", "fitness", "travel", "shopping-list"] : ["task", "fitness", "travel", "shopping-list", "work-monitor"],
     clarification: s.proposals
       .filter((p) => p.status === "pending")
       .slice(-1)

@@ -113,6 +113,18 @@ test("storage quota failures retain retryable values in the live session", async
   assert.equal(saved, "draft");
   assert.equal(store.status(), "saved");
 });
+test("upload-only synchronization releases the write gate and concurrent owners cannot unlock it", async () => {
+  const store = new ReliableState(memory(), ["x"], async () => {});
+  await store.exclusive(async () => ({ changed: false }), result => result.changed);
+  await store.persist("x", 1);
+  let finish!: () => void;
+  const first = store.exclusive(() => new Promise<{ changed: boolean }>(r => { finish = () => r({ changed: true }); }), result => result.changed);
+  await Promise.resolve(); await Promise.resolve();
+  await assert.rejects(store.exclusive(async () => {}), /restore_in_progress/);
+  await assert.rejects(store.persist("x", 2), /restore_in_progress/);
+  finish(); await first;
+  await assert.rejects(store.persist("x", 3), /restore_in_progress/);
+});
 test("draft round trips preserve unfinished sets instead of converting them to zero", () => {
   const result = decodeDraft(
     encodeDraft({ actual: { squat: [12, NaN, 0] }, notes: "未完成" }),

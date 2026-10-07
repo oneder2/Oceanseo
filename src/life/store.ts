@@ -1,3 +1,4 @@
+import { profileLocalStorage as localStorage } from "../profileStorage";
 import { APP_STATE_KEYS } from "../appDataStore";
 import { emptyLife, isLifeData } from "./model";
 export function loadLife() {

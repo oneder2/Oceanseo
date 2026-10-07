@@ -1,3 +1,4 @@
+// Historical 0.11 UI only. For 0.12 use conversation-smoke.js and conversation-agent-smoke.js.
 // Use an isolated playwright-cli browser on the production preview server.
 // Exercises real manual planning UI. It does not call a real AI service.
 async (page) => {

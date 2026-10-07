@@ -1,22 +1,40 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
+use tauri::Manager;
+#[cfg(desktop)]
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, WindowEvent,
+    WindowEvent,
 };
 use tauri_plugin_deep_link::DeepLinkExt;
 
+mod accounts;
 mod ai_settings;
 mod assistant;
 mod backup_validation;
+mod bead_ai;
+mod credentials;
 mod deep_links;
+#[cfg(target_os = "linux")]
+mod desktop_launch;
 mod goals;
+mod infrastructure;
 mod maps;
+#[cfg(target_os = "android")]
+mod mobile;
 mod planning;
+mod profiles;
+mod sync;
 mod tasks;
+#[cfg(desktop)]
 mod work_monitor;
+
+#[tauri::command]
+fn get_runtime_platform() -> &'static str {
+    std::env::consts::OS
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -241,8 +259,13 @@ async fn generate_meal_plan(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .manage(deep_links::DeepLinkQueue::default())
+    #[cfg(target_os = "linux")]
+    desktop_launch::sanitize_inherited_appimage();
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(mobile::init());
+    #[cfg(desktop)]
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(url) = deep_links::deep_link_argument(&args) {
                 deep_links::receive_url(app, url);
@@ -251,12 +274,50 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_autostart::Builder::new().build());
+    builder
+        .manage(deep_links::DeepLinkQueue::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
+            get_runtime_platform,
+            profiles::get_profile_status,
+            profiles::list_local_profiles,
+            accounts::sign_in_account,
+            accounts::select_local_profile,
+            accounts::restart_selected_profile,
+            accounts::check_account_session,
+            accounts::list_account_sessions,
+            accounts::revoke_account_session,
+            accounts::logout_account,
+            accounts::change_account_password,
+            sync::get_sync_status,
+            infrastructure::check_host_endpoint,
+            infrastructure::open_host_url,
+            infrastructure::save_host_credential,
+            infrastructure::host_credential_configured,
+            sync::save_sync_config,
+            sync::preview_sync,
+            sync::commit_sync,
+            sync::discard_sync_preview,
+            sync::automatic::get_automatic_sync_settings,
+            sync::automatic::set_automatic_sync_enabled,
+            sync::automatic::preview_automatic_sync,
+            sync::automatic::commit_automatic_sync,
+            sync::disconnect_sync,
+            sync::export_sync_recovery,
+            #[cfg(target_os = "android")]
+            mobile::configure_mobile_reminders,
+            #[cfg(target_os = "android")]
+            mobile::get_mobile_reminder_status,
+            #[cfg(target_os = "android")]
+            mobile::open_mobile_reminder_settings,
+            #[cfg(target_os = "android")]
+            mobile::share_mobile_shopping_list,
+            bead_ai::analyze_bead_image,
+            bead_ai::generate_bead_image,
             generate_meal_plan,
             planning::run_planning_agent,
             assistant::run_assistant,
@@ -282,36 +343,78 @@ pub fn run() {
             tasks::export_data_backup,
             tasks::restore_data_backup,
             deep_links::take_pending_deep_links,
+            #[cfg(desktop)]
             work_monitor::get_work_dashboard,
+            #[cfg(desktop)]
             work_monitor::save_work_monitor_config,
+            #[cfg(desktop)]
             work_monitor::scan_workspaces,
+            #[cfg(desktop)]
             work_monitor::run_scheduled_work_scan,
+            #[cfg(desktop)]
             work_monitor::generate_work_report,
+            #[cfg(desktop)]
             work_monitor::get_gworkspace_catalog,
+            #[cfg(desktop)]
             work_monitor::set_work_project_mapping,
+            #[cfg(desktop)]
             work_monitor::reject_work_draft,
+            #[cfg(desktop)]
             work_monitor::sync_work_draft,
         ])
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
-            let ai_settings_store =
-                ai_settings::AiSettingsStore::open(&app_data_dir.join("ai-settings.json"))
-                    .map_err(std::io::Error::other)?;
+            let credential_cipher = credentials::CredentialCipher::new(app.handle());
+            let profile = profiles::ProfileRuntime::open(&app_data_dir, credential_cipher.clone())
+                .map_err(std::io::Error::other)?;
+            let profile_data_dir = profile.data_dir.clone();
+            let account_key =
+                (profile.current_key != profiles::LOCAL).then(|| profile.current_key.clone());
+            app.manage(profile);
+            app.manage(infrastructure::HostRuntime {
+                path: profile_data_dir.join("host-credentials.json"),
+                cipher: credential_cipher.clone(),
+                gate: tokio::sync::Mutex::new(()),
+            });
+            app.manage(sync::SyncRuntime {
+                path: profile_data_dir.join(if account_key.is_some() {
+                    "account-session.json"
+                } else {
+                    "sync-settings.json"
+                }),
+                account_key,
+                cipher: credential_cipher.clone(),
+                gate: tokio::sync::Mutex::new(()),
+                preview: std::sync::Mutex::new(None),
+                automatic_preview: std::sync::Mutex::new(None),
+            });
+            let ai_settings_store = ai_settings::AiSettingsStore::open_with_cipher(
+                &profile_data_dir.join("ai-settings.json"),
+                credential_cipher.clone(),
+            )
+            .map_err(std::io::Error::other)?;
             app.manage(ai_settings_store);
             app.manage(assistant::AssistantRuntime::default());
             app.manage(
-                maps::MapStore::open(&app_data_dir.join("map-settings.json"))
-                    .map_err(std::io::Error::other)?,
+                maps::MapStore::open_with_cipher(
+                    &profile_data_dir.join("map-settings.json"),
+                    credential_cipher,
+                )
+                .map_err(std::io::Error::other)?,
             );
-            let task_store = tasks::TaskStore::open(&app_data_dir.join("oceanseo-tasks.sqlite3"))
-                .map_err(std::io::Error::other)?;
+            let task_store =
+                tasks::TaskStore::open(&profile_data_dir.join("oceanseo-tasks.sqlite3"))
+                    .map_err(std::io::Error::other)?;
             app.manage(task_store);
-            let work_monitor_store = work_monitor::WorkMonitorStore::open(
-                &app_data_dir.join("oceanseo-work-monitor.sqlite3"),
-                app_data_dir.join("work-monitor-exports"),
-            )
-            .map_err(std::io::Error::other)?;
-            app.manage(work_monitor_store);
+            #[cfg(desktop)]
+            {
+                let work_monitor_store = work_monitor::WorkMonitorStore::open(
+                    &profile_data_dir.join("oceanseo-work-monitor.sqlite3"),
+                    profile_data_dir.join("work-monitor-exports"),
+                )
+                .map_err(std::io::Error::other)?;
+                app.manage(work_monitor_store);
+            }
 
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -329,49 +432,52 @@ pub fn run() {
                 let _ = app.deep_link().register_all();
             }
 
-            let open_item = MenuItem::with_id(app, "open", "打开潮汐计划", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+            #[cfg(desktop)]
+            {
+                let open_item =
+                    MenuItem::with_id(app, "open", "打开 Oceanseo", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
 
-            TrayIconBuilder::new()
-                .icon(app.default_window_icon().expect("missing app icon").clone())
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                TrayIconBuilder::new()
+                    .icon(app.default_window_icon().expect("missing app icon").clone())
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "open" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        if let Some(window) = tray.app_handle().get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            if let Some(window) = tray.app_handle().get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
-                    }
-                })
-                .build(app)?;
+                    })
+                    .build(app)?;
 
-            if let Some(window) = app.get_webview_window("main") {
-                let window_to_hide = window.clone();
-                window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window_to_hide.hide();
-                    }
-                });
+                if let Some(window) = app.get_webview_window("main") {
+                    let window_to_hide = window.clone();
+                    window.on_window_event(move |event| {
+                        if let WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            let _ = window_to_hide.hide();
+                        }
+                    });
+                }
             }
-
             Ok(())
         })
         .run(tauri::generate_context!())

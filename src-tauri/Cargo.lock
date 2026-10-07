@@ -4268,8 +4268,9 @@ dependencies = [
 
 [[package]]
 name = "tideplan"
-version = "0.11.0"
+version = "0.18.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "percent-encoding",
  "reqwest 0.12.28",

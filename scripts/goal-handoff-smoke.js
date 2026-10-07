@@ -1,3 +1,4 @@
+// Historical 0.11 UI only. For 0.12 use conversation-smoke.js and conversation-agent-smoke.js.
 // Isolated, explicitly seeded business conditions fixture. No live AI output.
 async (page) => {
   const errors=[];page.on('pageerror',e=>errors.push(e.message));

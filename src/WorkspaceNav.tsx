@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Archive,
   CalendarRange,
@@ -13,8 +14,12 @@ import {
   Dumbbell,
   MapPin,
   Compass,
+  Server,
+  Search,
+  X,
 } from "lucide-react";
 import type { View } from "./types";
+import { viewAvailable } from "./platform";
 
 export default function WorkspaceNav({
   view,
@@ -23,6 +28,7 @@ export default function WorkspaceNav({
   view: View;
   onNavigate: (view: View) => void;
 }) {
+  const [query, setQuery] = useState("");
   const groups: {
     name: string;
     items: { view: View; label: string; icon: typeof Gauge }[];
@@ -48,6 +54,7 @@ export default function WorkspaceNav({
     {
       name: "个人项目",
       items: [
+        { view: "infrastructure", label: "主机与服务", icon: Server },
         { view: "work-monitor", label: "工作观察", icon: Radar },
         { view: "bead-studio", label: "拼豆图纸", icon: Grid2X2 },
       ],
@@ -62,9 +69,18 @@ export default function WorkspaceNav({
       ],
     },
   ];
+  const filtered = groups.map(group => ({ ...group, items: group.items.filter(item =>
+    viewAvailable(item.view) && `${group.name} ${item.label}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
+  ) })).filter(group => group.items.length);
   return (
     <nav className="main-nav workspace-nav" aria-label="工作区导航">
-      {groups.map((group) => (
+      <div className="nav-search">
+        <Search size={16} aria-hidden="true" />
+        <input aria-label="搜索工具" placeholder="搜索工具" value={query} onChange={event => setQuery(event.target.value)} />
+        {query && <button type="button" aria-label="清除工具搜索" title="清除工具搜索" onClick={() => setQuery("")}><X size={16} /></button>}
+      </div>
+      {!filtered.length && <p className="nav-empty" role="status">没有匹配的工具</p>}
+      {filtered.map((group) => (
         <section key={group.name} aria-label={group.name}>
           <h2>{group.name}</h2>
           {group.items.map((item) => (
@@ -73,7 +89,7 @@ export default function WorkspaceNav({
               type="button"
               className={view === item.view ? "active" : ""}
               aria-current={view === item.view ? "page" : undefined}
-              onClick={() => onNavigate(item.view)}
+              onClick={() => { setQuery(""); onNavigate(item.view); }}
             >
               <item.icon size={17} />
               <span>{item.label}</span>

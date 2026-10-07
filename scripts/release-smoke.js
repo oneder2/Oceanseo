@@ -11,7 +11,7 @@ async (page) => {
       .getByRole("navigation", { name: "工作区导航" })
       .getByRole("button", { name, exact: true })
       .click();
-  await page.goto("http://127.0.0.1:1420");
+  await page.goto(new URL('/', page.url()).href);
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.evaluate(() => localStorage.clear());
   await page.reload();

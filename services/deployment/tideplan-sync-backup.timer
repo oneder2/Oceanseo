@@ -1,0 +1,11 @@
+[Unit]
+Description=Oceanseo daily private sync database backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=tideplan-sync-backup.service
+
+[Install]
+WantedBy=timers.target

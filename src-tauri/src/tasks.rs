@@ -13,7 +13,7 @@ use uuid::Uuid;
 pub const TASK_SCHEMA_VERSION: &str = "1.0.0";
 const LEGACY_MIGRATION_KEY: &str = "tideplan.tasks.v1";
 const BACKUP_SCHEMA_VERSION: &str = "1.0.0";
-const APP_STATE_KEYS: [&str; 10] = [
+const APP_STATE_KEYS: [&str; 11] = [
     "tideplan.reminders.v1",
     "tideplan.purchase-list.v1",
     "tideplan.meal-plan.v1",
@@ -24,8 +24,12 @@ const APP_STATE_KEYS: [&str; 10] = [
     "tideplan.life.v1",
     "tideplan.assistant.v1",
     "tideplan.goals.v1",
+    "tideplan.infrastructure.v1",
 ];
 const MAX_APP_STATE_BYTES: usize = 2 * 1024 * 1024;
+
+#[path = "sync_store.rs"]
+mod sync_store;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -195,7 +199,7 @@ impl TaskStore {
         }) {
             return Err("关联任务已变化，请重新整理".into());
         }
-        if request.create_tasks.len() > 100 {
+        if request.create_tasks.len() > 100 || request.update_tasks.len() > 100 {
             return Err("一次最多创建 100 项行动".into());
         }
         if request.undo {
@@ -203,6 +207,7 @@ impl TaskStore {
             if undo.is_null()
                 || undo["revision"] != current["revision"]
                 || !request.create_tasks.is_empty()
+                || !request.update_tasks.is_empty()
                 || next["goals"] != undo["goals"]
                 || next["actions"] != undo["actions"]
             {
@@ -219,6 +224,46 @@ impl TaskStore {
                 tx.execute("DELETE FROM tasks WHERE id=?1", [&task.id])
                     .map_err(|_| "撤销失败")?;
             }
+            if let Some(pairs) = undo["updatedTasks"].as_array() {
+                for pair in pairs {
+                    let task = existing
+                        .iter()
+                        .find(|t| pair["after"]["id"] == t.id)
+                        .ok_or("事项已删除，不能撤销")?;
+                    if task_ui(task) != pair["after"] {
+                        return Err("事项已编辑或完成，不能撤销本次修改".into());
+                    }
+                    let before = task_from_ui(&pair["before"])?;
+                    validate_task(&before)?;
+                    update_task_row(&tx, &before).map_err(|_| "恢复事项失败")?;
+                }
+            }
+        }
+        let mut updated_ids = std::collections::HashSet::new();
+        for task in &request.update_tasks {
+            validate_task(task)?;
+            let before = existing
+                .iter()
+                .find(|t| t.id == task.id)
+                .ok_or("待修改事项不存在")?;
+            if !updated_ids.insert(&task.id)
+                || !request
+                    .checks
+                    .iter()
+                    .any(|c| c.id == task.id && c.updated_at == before.updated_at)
+                || before.notes != task.notes
+                || before.created_at != task.created_at
+                || before.completed_at != task.completed_at
+                || before.origin != task.origin
+                || !next["actions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a["taskId"] == task.id)
+            {
+                return Err("事项修改缺少版本校验或试图覆盖受保护内容".into());
+            }
+            update_task_row(&tx, task).map_err(|_| "修改事项失败，整批更改未写入")?;
         }
         for task in &request.create_tasks {
             validate_task(task).map_err(|e| format!("行动无效：{e}"))?;
@@ -347,6 +392,11 @@ impl TaskStore {
                 CREATE TABLE IF NOT EXISTS app_state_bootstrap (
                     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
                     completed_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_state (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    value_json TEXT NOT NULL
                 );
 
                 INSERT OR IGNORE INTO schema_migrations(version, applied_at)
@@ -776,6 +826,9 @@ fn list_tasks_from_connection(connection: &Connection) -> Result<Vec<TaskRecord>
 }
 
 fn validate_app_state(key: &str, value: &serde_json::Value) -> Result<(), String> {
+    if key == "tideplan.infrastructure.v1" && !crate::infrastructure::valid_document(value) {
+        return Err("主机档案数据无效，原记录未修改".into());
+    }
     if !APP_STATE_KEYS.contains(&key) {
         return Err("app_state_key_invalid".to_string());
     }
@@ -922,6 +975,25 @@ fn insert_task(connection: &Connection, task: &TaskRecord) -> rusqlite::Result<u
 fn task_ui(t: &TaskRecord) -> serde_json::Value {
     serde_json::json!({"schemaVersion":t.schema_version,"id":t.id,"title":t.title,"notes":t.notes,"horizon":t.horizon,"priority":t.priority,"startDate":t.start_date.as_deref().unwrap_or(""),"dueDate":t.due_date.as_deref().unwrap_or(""),"createdAt":t.created_at,"updatedAt":t.updated_at,"completedAt":t.completed_at,"origin":t.origin})
 }
+fn task_from_ui(v: &serde_json::Value) -> Result<TaskRecord, String> {
+    let mut value = v.clone();
+    let o = value.as_object_mut().ok_or("事项恢复记录无效")?;
+    for (from, to) in [
+        ("schemaVersion", "schema_version"),
+        ("startDate", "start_date"),
+        ("dueDate", "due_date"),
+        ("createdAt", "created_at"),
+        ("updatedAt", "updated_at"),
+        ("completedAt", "completed_at"),
+    ] {
+        let mut item = o.remove(from).ok_or("事项恢复字段缺失")?;
+        if (from == "startDate" || from == "dueDate") && item == "" {
+            item = serde_json::Value::Null;
+        }
+        o.insert(to.into(), item);
+    }
+    serde_json::from_value(value).map_err(|_| "事项恢复记录无效".into())
+}
 
 fn update_task_row(connection: &Connection, task: &TaskRecord) -> rusqlite::Result<usize> {
     let (kind, label, reference) = origin_columns(task.origin.as_ref());
@@ -991,7 +1063,7 @@ fn normalize_optional_date(value: Option<String>) -> Option<String> {
     value.and_then(|date| if date.is_empty() { None } else { Some(date) })
 }
 
-fn validate_task(task: &TaskRecord) -> Result<(), &'static str> {
+pub(crate) fn validate_task(task: &TaskRecord) -> Result<(), &'static str> {
     if task.schema_version != TASK_SCHEMA_VERSION {
         return Err("unsupported_schema_version");
     }
@@ -1218,6 +1290,7 @@ mod tests {
             operation_id: "op1".into(),
             next: s,
             create_tasks: vec![task],
+            update_tasks: vec![],
             checks: vec![],
             undo: false,
         }
@@ -1280,6 +1353,7 @@ mod tests {
             operation_id: "undo1".into(),
             next,
             create_tasks: vec![],
+            update_tasks: vec![],
             checks: vec![],
             undo: true,
         };
@@ -1307,12 +1381,87 @@ mod tests {
             operation_id: "undo1".into(),
             next,
             create_tasks: vec![],
+            update_tasks: vec![],
             checks: vec![],
             undo: true,
         };
         let result = reopened.commit_goals(undo).unwrap();
         assert_eq!(result.tasks, vec![original]);
         assert!(result.state["goals"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dialogue_parameter_update_and_undo_survive_backup_restart() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let original = store.create(mutation("已有任务", None)).unwrap();
+        let mut changed = original.clone();
+        changed.title = "明确后的下一步".into();
+        changed.due_date = Some("2026-10-10".into());
+        changed.updated_at = "2090-01-01T00:00:00.000Z".into();
+        let mut request = goal_commit(original.clone());
+        request.create_tasks.clear();
+        request.update_tasks = vec![changed.clone()];
+        request.checks = vec![crate::goals::TaskCheck {
+            id: original.id.clone(),
+            updated_at: original.updated_at.clone(),
+        }];
+        request.next["conversation"] = serde_json::json!({"messages":[{"id":"m1","role":"system","text":"已执行一项更改","createdAt":"2026-09-26T12:00:00.000Z"}],"understanding":[],"proposalId":"","receipts":[],"needsReply":false});
+        request.next["undo"] = serde_json::json!({"operationId":"op1","revision":1,"goals":[],"actions":[],"thoughts":[],"createdTasks":[],"proposalId":"p1","updatedTasks":[{"before":task_ui(&original),"after":task_ui(&changed)}]});
+        store.commit_goals(request).unwrap();
+        assert_eq!(store.get(&original.id).unwrap(), changed);
+        let backup = store.export_backup().unwrap();
+        store.restore_backup(backup).unwrap();
+        drop(store);
+        let reopened = test_store(&temp);
+        assert_eq!(
+            reopened.goal_state().unwrap().unwrap()["conversation"]["messages"][0]["text"],
+            "已执行一项更改"
+        );
+        let mut next = goal_fixture();
+        next["revision"] = serde_json::json!(2);
+        next["operations"] = serde_json::json!(["op1", "undo1"]);
+        reopened
+            .commit_goals(crate::goals::GoalCommit {
+                expected_revision: 1,
+                operation_id: "undo1".into(),
+                next,
+                create_tasks: vec![],
+                update_tasks: vec![],
+                checks: vec![],
+                undo: true,
+            })
+            .unwrap();
+        assert_eq!(reopened.get(&original.id).unwrap(), original);
+    }
+
+    #[test]
+    fn dialogue_updates_require_versions_and_protect_notes_and_completion() {
+        let temp = TempDir::new().unwrap();
+        let store = test_store(&temp);
+        let original = store.create(mutation("原事项", None)).unwrap();
+        for field in ["checks", "notes", "completed"] {
+            let mut request = goal_commit(original.clone());
+            request.create_tasks.clear();
+            let mut changed = original.clone();
+            changed.title = "新标题".into();
+            if field != "checks" {
+                request.checks = vec![crate::goals::TaskCheck {
+                    id: original.id.clone(),
+                    updated_at: original.updated_at.clone(),
+                }];
+            }
+            if field == "notes" {
+                changed.notes = "不应覆盖笔记".into();
+            }
+            if field == "completed" {
+                changed.completed_at = Some("2026-09-26T12:00:00.000Z".into());
+            }
+            request.update_tasks = vec![changed];
+            assert!(store.commit_goals(request).is_err());
+            assert_eq!(store.get(&original.id).unwrap(), original);
+            assert!(store.goal_state().unwrap().is_none());
+        }
     }
 
     #[test]
@@ -1616,6 +1765,41 @@ mod tests {
             .bootstrap_app_state(HashMap::new())
             .unwrap();
         assert_eq!(restored.get("tideplan.assistant.v1"), Some(&document));
+    }
+
+    #[test]
+    fn host_inventory_roundtrips_sqlite_backup_and_rejects_corrupt_restore() {
+        let temp = TempDir::new().unwrap();
+        let document: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/infrastructure.json")).unwrap();
+        {
+            let store = test_store(&temp);
+            store
+                .set_app_state("tideplan.infrastructure.v1", document.clone())
+                .unwrap();
+            let backup = store.export_backup().unwrap();
+            let mut bad = store.export_backup().unwrap();
+            bad.app_state.get_mut("tideplan.infrastructure.v1").unwrap()["hosts"][0]["services"]
+                [0]["url"] = serde_json::json!("javascript:bad()");
+            assert!(store.restore_backup(bad).is_err());
+            assert_eq!(
+                store.bootstrap_app_state(HashMap::new()).unwrap()["tideplan.infrastructure.v1"],
+                document
+            );
+            store
+                .set_app_state(
+                    "tideplan.infrastructure.v1",
+                    serde_json::json!({"version":1,"hosts":[],"reports":[]}),
+                )
+                .unwrap();
+            store.restore_backup(backup).unwrap();
+        }
+        assert_eq!(
+            test_store(&temp)
+                .bootstrap_app_state(HashMap::new())
+                .unwrap()["tideplan.infrastructure.v1"],
+            document
+        );
     }
 
     #[test]

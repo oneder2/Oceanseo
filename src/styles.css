@@ -103,16 +103,19 @@ button:disabled {
 }
 
 .brand-mark {
-  width: 23px;
-  height: 23px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  border-radius: 6px;
-  background: var(--coral);
-  color: #fff;
-  box-shadow: 0 4px 10px rgba(216, 98, 77, 0.24);
+}
+
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .titlebar-menu {
@@ -1462,6 +1465,26 @@ button:disabled {
   gap: 9px;
 }
 
+.load-more-tasks {
+  min-height: 44px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px dashed rgba(93, 120, 145, 0.28);
+  border-radius: 7px;
+  background: rgba(93, 120, 145, 0.045);
+  color: var(--blue);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+.load-more-tasks:hover,
+.load-more-tasks:focus-visible {
+  border-color: rgba(93, 120, 145, 0.5);
+  background: rgba(93, 120, 145, 0.1);
+}
+
 .task-card {
   min-height: 94px;
   display: grid;
@@ -1619,6 +1642,25 @@ button:disabled {
   color: #8a8e87;
   cursor: pointer;
   transition: background 150ms ease, border-color 150ms ease;
+}
+
+.agenda-load-more {
+  min-height: 44px;
+  grid-column: 1 / -1;
+  padding: 9px 12px;
+  border: 1px dashed rgba(93, 120, 145, 0.28);
+  border-radius: 7px;
+  background: rgba(93, 120, 145, 0.045);
+  color: var(--blue);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.agenda-load-more:hover,
+.agenda-load-more:focus-visible {
+  border-color: rgba(93, 120, 145, 0.5);
+  background: rgba(93, 120, 145, 0.1);
 }
 
 .empty-column:hover {
@@ -2550,8 +2592,8 @@ button:disabled {
 }
 
 .setting-note .brand-mark {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
 }
 
 .toast {

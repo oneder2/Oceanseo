@@ -1,0 +1,21 @@
+{
+  "reply": "发布可以先从验证开始，我已把目标和第一步列好了。旅行先不急着安排：你更想放松休息，还是逛城市？",
+  "understanding": [
+    {"id":"release","parentId":"","label":"稳妥发布应用","status":"clear","evidence":"你说：先做完验证，再发布。"},
+    {"id":"verify","parentId":"release","label":"先验证升级与恢复","status":"clear","evidence":"用户指定的第一步。"},
+    {"id":"trip","parentId":"","label":"周末旅行的目的","status":"unknown","evidence":"尚未说明偏向休息还是游览。"}
+  ],
+  "waiting": [{"key":"g:trip","reason":"旅行目的尚未明确"}],
+  "plan": {
+    "summary":"先把发布做稳，旅行继续讨论。",
+    "questions":["这次旅行更偏向休息还是游览？"],"assumptions":[],"later":[],
+    "goals":[
+      {"id":"release","parentId":"","title":"稳妥发布应用","criterion":"升级和恢复通过验收","status":"active","reviewDate":""},
+      {"id":"trip","parentId":"","title":"安排周末旅行","criterion":"路线与预算明确","status":"active","reviewDate":""}
+    ],
+    "actions":[
+      {"id":"verify","goalId":"release","dependsOn":[],"minutes":25,"energy":"normal","blocker":"","deferredUntil":"","destination":"task","targetId":"","targetDate":"","existingTaskId":"","draft":{"title":"验证升级与恢复","notes":"检查真实数据的升级兼容性。","horizon":"short","priority":"important","startDate":"","dueDate":""},"conditions":{"training":null,"travel":null,"shopping":null,"meals":null}},
+      {"id":"travel","goalId":"trip","dependsOn":[],"minutes":20,"energy":"low","blocker":"","deferredUntil":"","destination":"travel","targetId":"","targetDate":"","existingTaskId":"","draft":{"title":"拟定旅行路线","notes":"根据对话中明确的偏好继续。","horizon":"short","priority":"normal","startDate":"","dueDate":""},"conditions":{"training":null,"travel":{"origin":"上海","destination":"杭州","budget":1200,"purpose":null,"transport":null,"accommodation":null},"shopping":null,"meals":null}}
+    ]
+  }
+}

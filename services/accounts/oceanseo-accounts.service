@@ -1,0 +1,25 @@
+[Unit]
+Description=Oceanseo invitation-only accounts and per-user sync
+After=network.target
+
+[Service]
+Type=simple
+User=oceanseo-accounts
+Group=oceanseo-accounts
+WorkingDirectory=/opt/oceanseo-accounts
+EnvironmentFile=/etc/oceanseo-accounts.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m services.accounts.server
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/oceanseo-accounts
+MemoryMax=1G
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

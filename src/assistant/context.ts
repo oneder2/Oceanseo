@@ -4,7 +4,9 @@ import { addDays, lifeEvents } from "../life/model";
 import type { WorkDashboard } from "../workMonitorStore";
 import type { Scope } from "./model";
 import { dateKey } from "../dateUtils";
+import { platform } from "../platform";
 import type { GoalState } from "../goals/model";
+import { infrastructureContext, type Infrastructure } from "../infrastructure/model";
 
 export interface AssistantData {
   tasks: Task[];
@@ -16,6 +18,7 @@ export interface AssistantData {
   ready: boolean;
   view: View;
   goals?: GoalState;
+  infrastructure?: Infrastructure;
 }
 /** Construct an explicit allowlisted projection. Never spread source records:
  * task notebooks, birthdays, private notes, routes and local paths stay local. */
@@ -25,6 +28,7 @@ export function makeContext(
   today = dateKey(),
 ) {
   const sections: Record<string, unknown> = {};
+  if (scopes.includes("infrastructure") && data.infrastructure) sections.infrastructure = infrastructureContext(data.infrastructure, today);
   const end = addDays(today, 13),
     start = addDays(today, -13);
   const shorten = (v: string, max = 200) => v.slice(0, max);
@@ -117,6 +121,8 @@ export function makeContext(
       : { available: false };
   return {
     today,
+    platform: platform.name,
+    unavailableViews: platform.mobile ? ["work-monitor", "bead-studio"] : [],
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     currentView: data.view,
     sections,

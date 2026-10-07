@@ -1,0 +1,11 @@
+[Unit]
+Description=Oceanseo daily private account database backup
+
+[Timer]
+OnCalendar=*-*-* 03:35:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=oceanseo-accounts-backup.service
+
+[Install]
+WantedBy=timers.target

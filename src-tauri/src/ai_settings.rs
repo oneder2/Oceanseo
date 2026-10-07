@@ -1,3 +1,4 @@
+use crate::credentials::CredentialCipher;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -51,13 +52,20 @@ impl Default for StoredAiSettings {
 
 pub struct AiSettingsStore {
     path: PathBuf,
+    cipher: CredentialCipher,
     settings: RwLock<StoredAiSettings>,
 }
 
 impl AiSettingsStore {
+    #[cfg(test)]
     pub fn open(path: &Path) -> Result<Self, String> {
+        Self::open_with_cipher(path, CredentialCipher::plain())
+    }
+
+    pub fn open_with_cipher(path: &Path, cipher: CredentialCipher) -> Result<Self, String> {
         let settings = if path.exists() {
             let raw = fs::read_to_string(path).map_err(|_| "ai_settings_read_failed")?;
+            let raw = cipher.decode(&raw)?;
             let mut stored: StoredAiSettings =
                 serde_json::from_str(&raw).map_err(|_| "ai_settings_invalid")?;
             stored.base_url = normalize_base_url(&stored.base_url)?;
@@ -65,8 +73,13 @@ impl AiSettingsStore {
         } else {
             StoredAiSettings::default()
         };
+        #[cfg(target_os = "android")]
+        if path.exists() {
+            persist_settings(path, &settings, &cipher)?;
+        }
         Ok(Self {
             path: path.to_path_buf(),
+            cipher,
             settings: RwLock::new(settings),
         })
     }
@@ -110,7 +123,7 @@ impl AiSettingsStore {
             }
         }
         candidate.base_url = base_url;
-        persist_settings(&self.path, &candidate)?;
+        persist_settings(&self.path, &candidate, &self.cipher)?;
         *settings = candidate;
         Ok(summary_for(&settings))
     }
@@ -193,12 +206,17 @@ fn summary_for(settings: &StoredAiSettings) -> AiSettingsSummary {
     }
 }
 
-fn persist_settings(path: &Path, settings: &StoredAiSettings) -> Result<(), String> {
+fn persist_settings(
+    path: &Path,
+    settings: &StoredAiSettings,
+    cipher: &CredentialCipher,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|_| "ai_settings_write_failed")?;
     }
     let temporary_path = path.with_extension("json.tmp");
-    let serialized = serde_json::to_vec(settings).map_err(|_| "ai_settings_write_failed")?;
+    let serialized =
+        cipher.encode(&serde_json::to_string(settings).map_err(|_| "ai_settings_write_failed")?)?;
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]
@@ -206,7 +224,7 @@ fn persist_settings(path: &Path, settings: &StoredAiSettings) -> Result<(), Stri
     let mut file = options
         .open(&temporary_path)
         .map_err(|_| "ai_settings_write_failed")?;
-    file.write_all(&serialized)
+    file.write_all(serialized.as_bytes())
         .and_then(|_| file.sync_all())
         .map_err(|_| "ai_settings_write_failed")?;
     #[cfg(unix)]
@@ -224,7 +242,7 @@ pub fn get_ai_settings(
 }
 
 #[tauri::command]
-pub fn save_ai_settings(
+pub async fn save_ai_settings(
     api_key: Option<String>,
     base_url: String,
     clear_api_key: bool,

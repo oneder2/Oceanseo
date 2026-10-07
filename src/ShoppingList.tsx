@@ -13,12 +13,14 @@ import {
   Pencil,
   Plus,
   Save,
+  Share2,
   ShoppingBasket,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react";
-import { DEFAULT_PURCHASE_CATEGORIES, exportPurchaseItems } from "./shoppingStore";
+import { DEFAULT_PURCHASE_CATEGORIES, exportPurchaseItems, sharePurchaseItems } from "./shoppingStore";
+import { platform } from "./platform";
 import type { PurchaseItem, PurchaseItemDraft, PurchaseSource, ShoppingExportFormat } from "./types";
 
 type SourceFilter = "all" | PurchaseSource;
@@ -44,6 +46,7 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
   const [filter, setFilter] = useState<SourceFilter>("all");
   const [exportFormat, setExportFormat] = useState<ShoppingExportFormat>("markdown");
   const [exporting, setExporting] = useState(false);
+  const [sharing, setSharing] = useState(false);
   useEffect(()=>{if(seed)setDraft(seed.conditions?.shopping??{name:seed.title.slice(0,80),amount:"",category:"其他"});},[seed?.id]);
   useEffect(()=>{if(selectedId){setFilter("all");requestAnimationFrame(()=>document.getElementById(`purchase-${selectedId}`)?.scrollIntoView({block:"nearest"}));}},[selectedId]);
 
@@ -100,6 +103,17 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
     }
   }
 
+  async function handleShare() {
+    if (!filteredItems.length || sharing || exporting) return;
+    setSharing(true);
+    try {
+      await sharePurchaseItems(filteredItems, exportFormat);
+      onToast("已打开系统分享，请选择接收应用；关闭面板可取消");
+    } catch (e) {
+      onToast(String(e).replace(/^Error: /, ""));
+    } finally { setSharing(false); }
+  }
+
   return (
     <section className="purchase-workspace" aria-label="采购清单">
       <section className="purchase-overview" aria-label="采购进度">
@@ -135,12 +149,17 @@ export default function ShoppingList({ items, onAdd, onUpdate, onDelete, onToggl
         <div className="purchase-tools">
           {manualCompletedCount > 0 && <button className="purchase-clear" type="button" onClick={onClearCompleted}><PackageCheck size={15} />清除手动已采购</button>}
           <label className="purchase-export-select"><select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ShoppingExportFormat)} aria-label="导出格式"><option value="markdown">Markdown</option><option value="csv">CSV</option></select><ChevronDown size={13} /></label>
-          <button className="secondary-button" type="button" disabled={!filteredItems.length || exporting} onClick={() => void handleExport()}>
+          <button className="secondary-button" type="button" disabled={!filteredItems.length || exporting || sharing} onClick={() => void handleExport()}>
             {exporting ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
             {exporting ? "正在保存" : "导出到…"}
           </button>
+          {platform.name === "android" && <button className="secondary-button" type="button" disabled={!filteredItems.length || exporting || sharing} onClick={() => void handleShare()}>
+            {sharing ? <LoaderCircle className="spin" size={15} /> : <Share2 size={15} />}{sharing ? "正在准备" : "分享清单"}
+          </button>}
         </div>
       </div>
+
+      {platform.name === "android" && <p className="purchase-export-hint">导出与分享包含当前来源下的 {filteredItems.length} 项物品、采购状态和食谱来源。选择接收应用后才会分享。</p>}
 
       <div className="purchase-ledger">
         {groupedItems.map((group) => (

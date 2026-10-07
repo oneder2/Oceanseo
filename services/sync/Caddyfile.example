@@ -1,0 +1,7 @@
+# Replace with the domain you own. Caddy manages HTTPS certificates.
+sync.example.com {
+    request_body {
+        max_size 17MB
+    }
+    reverse_proxy 127.0.0.1:4789
+}

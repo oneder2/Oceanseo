@@ -3,6 +3,7 @@ import type { LifeData } from "../life/model";
 import { validDate, addDays } from "../life/model";
 import { dateKey } from "../dateUtils";
 import { validConditions, type GoalConditions } from "./handoff";
+import { validConversation, validWaiting, type Conversation, type Waiting } from "./conversationData";
 
 export const GOAL_KEY = "tideplan.goals.v1";
 export const destinations = {
@@ -64,6 +65,7 @@ export interface Plan {
   actions: PlanAction[];
 }
 export interface Proposal {
+  waiting?: Waiting[];
   id: string;
   sourceIds: string[];
   createdAt: string;
@@ -82,6 +84,7 @@ export interface Review {
   source: "local" | "ai";
 }
 export interface GoalState {
+  conversation?: Conversation;
   version: 1;
   revision: number;
   thoughts: Thought[];
@@ -108,6 +111,9 @@ export interface GoalState {
     thoughts: Thought[];
     createdTasks: Task[];
     proposalId: string;
+    conversation?: Conversation;
+    proposalBefore?: Proposal;
+    updatedTasks?: { before: Task; after: Task }[];
   };
 }
 export const emptyGoals = (): GoalState => ({
@@ -235,6 +241,7 @@ export function isPlan(v: unknown): v is Plan {
 export function isGoalState(v: unknown): v is GoalState {
   if (
     !obj(v) ||
+    (v.conversation !== undefined && !validConversation(v.conversation)) ||
     v.version !== 1 ||
     !int(v.revision, 0, Number.MAX_SAFE_INTEGER) ||
     !text(v.draft, 12000) ||
@@ -282,7 +289,7 @@ export function isGoalState(v: unknown): v is GoalState {
           ([k, val]) => id(k) && text(val, 40),
         ) &&
         ["pending", "applied", "undone"].includes(p.status) &&
-        isPlan(p.plan),
+        isPlan(p.plan) && (p.waiting === undefined || validWaiting(p.waiting)),
     ) ||
     !unique(v.proposals) ||
     !list(v.operations, 2000, id)
@@ -309,6 +316,9 @@ export function isGoalState(v: unknown): v is GoalState {
     (!obj(v.undo) ||
       !id(v.undo.operationId) ||
       !id(v.undo.proposalId) ||
+      (v.undo.conversation !== undefined && !validConversation(v.undo.conversation)) ||
+      (v.undo.proposalBefore !== undefined && (!obj(v.undo.proposalBefore) || !isPlan(v.undo.proposalBefore.plan))) ||
+      (v.undo.updatedTasks !== undefined && !list(v.undo.updatedTasks, 100, p => obj(p) && obj(p.before) && obj(p.after) && id(p.before.id) && p.before.id === p.after.id && text(p.before.updatedAt,40) && text(p.after.updatedAt,40))) ||
       !int(v.undo.revision, 0, Number.MAX_SAFE_INTEGER) ||
       !list(v.undo.goals, 300, goal) ||
       !list(v.undo.actions, 1000, (a) => action(a) && id(a.taskId)) ||

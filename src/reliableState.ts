@@ -131,16 +131,17 @@ export class ReliableState {
     // local mirror. Malformed journals/mirror errors above remain fatal.
     await this.flush().catch(() => undefined);
   }
-  async exclusive<T>(action: () => Promise<T>, keepLocked = false) {
+  async exclusive<T>(action: () => Promise<T>, keepLocked: boolean | ((result: T) => boolean) = false) {
+    if (this.locked) throw Error("restore_in_progress");
     this.locked = true;
-    let success = false;
+    let retained = false;
     try {
       await this.flush();
       const result = await action();
-      success = true;
+      retained = typeof keepLocked === "function" ? keepLocked(result) : keepLocked;
       return result;
     } finally {
-      if (!success || !keepLocked) this.locked = false;
+      if (!retained) this.locked = false;
     }
   }
 }

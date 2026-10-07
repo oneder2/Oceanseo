@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CalendarCheck,
   Check,
@@ -13,6 +13,8 @@ import { completedDateKey, dateFromKey, dateKey } from "./dateUtils";
 import type { Countdown, Task } from "./types";
 import MonthJump from "./MonthJump";
 import type { LifeEvent } from "./life/model";
+import type { HostEvent } from "./infrastructure/model";
+import { calendarEventIndex, type CalendarEvent } from "./calendarEvents";
 
 interface CalendarViewProps {
   tasks: Task[];
@@ -22,12 +24,9 @@ interface CalendarViewProps {
   onNewTask: (date: string) => void;
   lifeEvents?: LifeEvent[];
   onOpenLife?: (event: LifeEvent) => void;
+  hostEvents?: HostEvent[];
+  onOpenHost?: (event: HostEvent) => void;
 }
-
-type CalendarEvent =
-  | { type: "task"; task: Task; kind: "start" | "due" | "completed"; label: string }
-  | { type: "countdown"; countdown: Countdown; kind: "countdown"; label: string }
-  | { type: "life"; event: LifeEvent; kind: "training" | "travel"; label: string };
 
 const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
@@ -41,37 +40,20 @@ function monthDays(month: Date) {
   );
 }
 
-function eventsForDate(tasks: Task[], countdowns: Countdown[], day: string, life: LifeEvent[] = []): CalendarEvent[] {
-  const taskEvents = tasks.flatMap((task) => {
-    const events: CalendarEvent[] = [];
-    if (task.startDate === day) events.push({ type: "task", task, kind: "start", label: "开始" });
-    if (task.dueDate === day) events.push({ type: "task", task, kind: "due", label: "截止" });
-    if (completedDateKey(task.completedAt) === day) {
-      const completedTime = new Intl.DateTimeFormat("zh-CN", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false,
-      }).format(new Date(task.completedAt!));
-      events.push({ type: "task", task, kind: "completed", label: `完成 ${completedTime}` });
-    }
-    return events;
-  });
-  const countdownEvents: CalendarEvent[] = countdowns
-    .filter((countdown) => countdown.targetDate === day)
-    .map((countdown) => ({ type: "countdown", countdown, kind: "countdown", label: "关键日期" }));
-  const extra: CalendarEvent[] = life.filter(e=>e.date===day).map(event=>({type:"life",event,kind:event.kind,label:event.kind==="training"?event.done?"训练已完成":"训练待清点":"旅行安排"}));
-  return [...extra, ...countdownEvents, ...taskEvents];
-}
-
-export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCountdown, onNewTask, lifeEvents = [], onOpenLife }: CalendarViewProps) {
+export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCountdown, onNewTask, lifeEvents = [], onOpenLife, hostEvents = [], onOpenHost }: CalendarViewProps) {
   const now = new Date();
   const [month, setMonth] = useState(() => new Date(now.getFullYear(), now.getMonth(), 1));
   const [selectedDate, setSelectedDate] = useState(dateKey());
+  const [agendaLimit, setAgendaLimit] = useState(30);
   const days = useMemo(() => monthDays(month), [month]);
-  const selectedEvents = useMemo(
-    () => eventsForDate(tasks, countdowns, selectedDate, lifeEvents),
-    [tasks, countdowns, selectedDate, lifeEvents],
-  );
+  const eventsByDate = useMemo(() => calendarEventIndex(tasks, countdowns, lifeEvents, hostEvents), [tasks, countdowns, lifeEvents, hostEvents]);
+  const selectedEvents = eventsByDate.get(selectedDate) ?? [];
+  const visibleSelectedEvents = selectedEvents.slice(0, agendaLimit);
+  const remainingAgendaEvents = selectedEvents.length - visibleSelectedEvents.length;
+
+  useEffect(() => {
+    setAgendaLimit(30);
+  }, [selectedDate, month]);
 
   const monthPrefix = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
   const monthStarts = tasks.filter((task) => task.startDate?.startsWith(monthPrefix)).length;
@@ -79,12 +61,14 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
   const monthCountdowns = countdowns.filter((countdown) => countdown.targetDate.startsWith(monthPrefix)).length;
 
   function openEvent(event: CalendarEvent) {
+    if (event.type === "host") { onOpenHost?.(event.event); return; }
     if (event.type === "task") onOpenTask(event.task);
     else if (event.type === "life") onOpenLife?.(event.event);
     else onOpenCountdown(event.countdown);
   }
 
   function eventTitle(event: CalendarEvent) {
+    if (event.type === "host") return event.event.title;
     return event.type === "task" ? event.task.title : event.type === "life" ? `${event.event.done ? "✓ " : ""}${event.event.title}` : event.countdown.title;
   }
 
@@ -122,16 +106,20 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
           {weekdays.map((weekday) => <div className="weekday" key={weekday}>{weekday}</div>)}
           {days.map((day) => {
             const key = dateKey(day);
-            const events = eventsForDate(tasks, countdowns, key, lifeEvents);
+            const events = eventsByDate.get(key) ?? [];
             const isCurrentMonth = day.getMonth() === month.getMonth();
             return (
               <div
                 className={`calendar-day ${!isCurrentMonth ? "outside" : ""} ${key === selectedDate ? "selected" : ""}`}
                 key={key}
               >
-                <button className={`day-number ${key === dateKey() ? "today" : ""}`} type="button" disabled={day.getFullYear() < 100 || day.getFullYear() > 9999} onClick={() => setSelectedDate(key)} aria-label={`选择${key}`}>
+                <button className={`day-number ${key === dateKey() ? "today" : ""}`} type="button" disabled={day.getFullYear() < 100 || day.getFullYear() > 9999} onClick={() => setSelectedDate(key)} aria-label={`选择${key}`} aria-pressed={key === selectedDate} aria-describedby={events.length ? `calendar-events-${key}` : undefined}>
                   {day.getDate()}
                 </button>
+                {events.length > 0 && <span className="sr-only" id={`calendar-events-${key}`}>{events.length} 项日程：{events.map(event => `${event.label} ${eventTitle(event)}`).join("；")}</span>}
+                <div className="calendar-day-dots" aria-hidden="true">
+                  {[...new Set(events.map(event => event.kind))].slice(0, 4).map(kind => <i className={`event-${kind}`} key={kind} />)}
+                </div>
                 <div className="day-events">
                   {events.slice(0, 3).map((event, index) => (
                     <button className={`calendar-event event-${event.kind}`} type="button" onClick={() => openEvent(event)} key={`${event.kind}-${index}`} title={`${event.label}：${eventTitle(event)}`}>
@@ -157,7 +145,7 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
           <button className="secondary-button" type="button" onClick={() => onNewTask(selectedDate)}><Plus size={15} />添加计划</button>
         </header>
         <div className="agenda-list">
-          {selectedEvents.map((event, index) => (
+          {visibleSelectedEvents.map((event, index) => (
             <button className={`agenda-item event-${event.kind}`} type="button" key={`${event.kind}-${index}`} onClick={() => openEvent(event)}>
               <span className="agenda-kind">{event.label}</span>
               <strong>{eventTitle(event)}</strong>
@@ -165,6 +153,11 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
               {event.type === "countdown" && <Hourglass size={13} />}
             </button>
           ))}
+          {remainingAgendaEvents > 0 && (
+            <button className="agenda-load-more" type="button" onClick={() => setAgendaLimit(limit => limit + 30)}>
+              查看其余 {remainingAgendaEvents} 项日程
+            </button>
+          )}
           {!selectedEvents.length && <p className="agenda-empty">这一天还没有计划轨迹。</p>}
         </div>
       </section>

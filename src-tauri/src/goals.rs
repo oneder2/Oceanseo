@@ -237,6 +237,7 @@ pub fn valid_state(s: &Value) -> bool {
             .as_str()
             .is_some_and(|s| s.len() == 5 && chrono::NaiveTime::parse_from_str(s, "%H:%M").is_ok());
     s["version"] == 1
+        && s.get("conversation").is_none_or(valid_conversation)
         && number(&s["revision"], 0, 9_007_199_254_740_991)
         && text(&s["draft"], 12000)
         && records(&s["thoughts"], 500, thought)
@@ -253,6 +254,7 @@ pub fn valid_state(s: &Value) -> bool {
                     .is_some_and(|m| m.iter().all(|(k, v)| id(&json!(k)) && text(v, 40)))
                 && choice(&p["status"], &["pending", "applied", "undone"])
                 && valid_plan(&p["plan"])
+                && p.get("waiting").is_none_or(valid_waiting)
         })
         && records(&s["reviews"], 200, |r| {
             date(&r["date"])
@@ -267,6 +269,17 @@ pub fn valid_state(s: &Value) -> bool {
         && (s["undo"].is_null() || {
             let u = &s["undo"];
             id(&u["operationId"])
+                && u.get("conversation").is_none_or(valid_conversation)
+                && u.get("proposalBefore")
+                    .is_none_or(|p| id(&p["id"]) && valid_plan(&p["plan"]))
+                && u.get("updatedTasks").is_none_or(|p| {
+                    list(p, 100, |pair| {
+                        id(&pair["before"]["id"])
+                            && pair["before"]["id"] == pair["after"]["id"]
+                            && text(&pair["before"]["updatedAt"], 40)
+                            && text(&pair["after"]["updatedAt"], 40)
+                    })
+                })
                 && id(&u["proposalId"])
                 && number(&u["revision"], 0, 9_007_199_254_740_991)
                 && records(&u["goals"], 300, goal)
@@ -281,6 +294,93 @@ pub fn valid_state(s: &Value) -> bool {
 fn object(properties: Value) -> Value {
     let required: Vec<_> = properties.as_object().unwrap().keys().cloned().collect();
     json!({"type":"object","properties":properties,"required":required,"additionalProperties":false})
+}
+pub fn valid_understanding(v: &Value) -> bool {
+    if !records(v, 80, |n| {
+        optional_id(&n["parentId"])
+            && text(&n["label"], 500)
+            && n["label"].as_str().is_some_and(|s| !s.trim().is_empty())
+            && choice(&n["status"], &["clear", "assumed", "unknown"])
+            && text(&n["evidence"], 1000)
+    }) {
+        return false;
+    }
+    graph_valid(v, &json!([]))
+}
+pub fn valid_waiting(v: &Value) -> bool {
+    let mut seen = HashSet::new();
+    list(v, 200, |w| {
+        w["key"]
+            .as_str()
+            .is_some_and(|k| (k.starts_with("g:") || k.starts_with("a:")) && id(&json!(&k[2..])))
+            && text(&w["reason"], 1000)
+            && w["reason"].as_str().is_some_and(|s| !s.trim().is_empty())
+    }) && v
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|w| seen.insert(w["key"].as_str().unwrap()))
+}
+pub fn valid_conversation(c: &Value) -> bool {
+    optional_id(&c["proposalId"])
+        && c["needsReply"].is_boolean()
+        && valid_understanding(&c["understanding"])
+        && records(&c["messages"], 160, |m| {
+            choice(&m["role"], &["user", "assistant", "system"])
+                && text(&m["text"], 12000)
+                && m["createdAt"]
+                    .as_str()
+                    .is_some_and(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok())
+        })
+        && records(&c["receipts"], 1000, |r| {
+            text(&r["key"], 84)
+                && text(&r["title"], 200)
+                && text(&r["description"], 4000)
+                && optional_id(&r["taskId"])
+                && optional_id(&r["goalId"])
+                && text(&r["createdAt"], 40)
+        })
+}
+pub fn dialogue_schema() -> Value {
+    let string = json!({"type":"string"});
+    object(
+        json!({"reply":string,"understanding":{"type":"array","items":object(json!({"id":string,"parentId":string,"label":string,"status":{"type":"string","enum":["clear","assumed","unknown"]},"evidence":string}))},"waiting":{"type":"array","items":object(json!({"key":string,"reason":string}))},"plan":plan_schema()}),
+    )
+}
+pub fn valid_dialogue(v: &Value) -> bool {
+    if !(text(&v["reply"], 12000)
+        && v["reply"].as_str().is_some_and(|s| !s.trim().is_empty())
+        && valid_understanding(&v["understanding"])
+        && valid_waiting(&v["waiting"])
+        && valid_plan(&v["plan"])
+        && v["plan"]["questions"]
+            .as_array()
+            .is_some_and(|a| a.len() <= 2))
+    {
+        return false;
+    }
+    let p = &v["plan"];
+    let keys: HashSet<String> = p["goals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| format!("g:{}", g["id"].as_str().unwrap()))
+        .chain(
+            p["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| format!("a:{}", a["id"].as_str().unwrap())),
+        )
+        .collect();
+    let waiting = v["waiting"].as_array().unwrap();
+    waiting
+        .iter()
+        .all(|w| keys.contains(w["key"].as_str().unwrap()))
+        && (keys.is_empty()
+            || !waiting.is_empty()
+            || (p["questions"].as_array().unwrap().is_empty()
+                && p["assumptions"].as_array().unwrap().is_empty()))
 }
 pub fn plan_schema() -> Value {
     let string = json!({"type":"string"});
@@ -315,6 +415,8 @@ pub struct GoalCommit {
     pub operation_id: String,
     pub next: Value,
     pub create_tasks: Vec<crate::tasks::TaskRecord>,
+    #[serde(default)]
+    pub update_tasks: Vec<crate::tasks::TaskRecord>,
     pub checks: Vec<TaskCheck>,
     pub undo: bool,
 }

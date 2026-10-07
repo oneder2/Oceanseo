@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { platform } from "./platform";
 
 export function useFullscreen(onError: (message: string) => void) {
   const [fullscreen, setFullscreen] = useState(false);
@@ -8,6 +9,7 @@ export function useFullscreen(onError: (message: string) => void) {
   const changing = useRef(false);
 
   useEffect(() => {
+    if (platform.mobile) return;
     let active = true;
     let unlisten: (() => void) | undefined;
     const sync = async () => {
@@ -38,6 +40,7 @@ export function useFullscreen(onError: (message: string) => void) {
   }, []);
 
   const change = useCallback(async (exit = false) => {
+    if (platform.mobile) return;
     if (changing.current) return;
     changing.current = true;
     setBusy(true);
@@ -61,6 +64,7 @@ export function useFullscreen(onError: (message: string) => void) {
   }, [onError]);
 
   useEffect(() => {
+    if (platform.mobile) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return;
       if (event.key === "F11" && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {

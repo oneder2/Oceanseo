@@ -1,5 +1,17 @@
+import { profileLocalStorage as localStorage, profileSessionStorage as sessionStorage } from "./profileStorage";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
+import { platform, viewAvailable } from "./platform";
+import MobileNav from "./MobileNav";
+import MobileReminderPanel from "./MobileReminderPanel";
+import SyncSettings from "./SyncSettings";
+import AccountCenter from "./AccountCenter";
+import { useAutomaticSync } from "./useAutomaticSync";
+import { takeSyncView } from "./syncView";
+const HostPanel = lazy(() => import("./infrastructure/HostPanel"));
+import { useInfrastructure } from "./infrastructure/store";
+import { useHostMonitor } from "./infrastructure/monitor";
+import { hostEvents, maintenanceDraft } from "./infrastructure/model";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -14,6 +26,7 @@ import {
   ChevronRight,
   Circle,
   Clock3,
+  Cloud,
   DatabaseBackup,
   Download,
   Flag,
@@ -30,36 +43,39 @@ import {
   Pin,
   PinOff,
   Plus,
+  RotateCcw,
   Search,
   Save,
   Settings,
-  ShieldCheck,
   Sparkles,
   Trash2,
   Upload,
+  UserRound,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 import CalendarView from "./CalendarView";
 import WorkspaceNav from "./WorkspaceNav";
-import BeadStudio from "./BeadStudio";
+const BeadStudio = lazy(() => import("./BeadStudio"));
 import CountdownView from "./CountdownView";
 import DatePicker from "./DatePicker";
 import HomeDashboard from "./HomeDashboard";
 import SaveStatus from "./SaveStatus";
-import Assistant from "./assistant/Assistant";
-const GoalWorkspace = lazy(() => import("./goals/GoalWorkspace"));
+import GoalChatLauncher from "./goals/GoalChatLauncher";
+import { useAssistantState } from "./assistant/useAssistantState";
+const GoalWorkspace = lazy(() => import("./goals/GoalConversation"));
 import GoalFocus from "./goals/GoalFocus";
 import { useGoals } from "./goals/store";
 import { useGoalRhythm } from "./goals/useGoalRhythm";
 import { businessTargets } from "./goals/context";
 import { destinationView, nextActions, type Action as GoalAction } from "./goals/model";
 import { taskDraftKey, notebookDraftKey, readTaskDraft } from "./editorDrafts";
-import MealPlanner from "./MealPlanner";
-import ShoppingList from "./ShoppingList";
-import WorkMonitorDashboard from "./WorkMonitorDashboard";
-import PeoplePage from "./life/PeoplePage";
-import FitnessPage from "./life/FitnessPage";
-import TravelPage from "./life/TravelPage";
+const MealPlanner = lazy(() => import("./MealPlanner"));
+const ShoppingList = lazy(() => import("./ShoppingList"));
+const WorkMonitorDashboard = lazy(() => import("./WorkMonitorDashboard"));
+const PeoplePage = lazy(() => import("./life/PeoplePage"));
+const FitnessPage = lazy(() => import("./life/FitnessPage"));
+const TravelPage = lazy(() => import("./life/TravelPage"));
 import MapSettings from "./life/MapSettings";
 import { emptyLife, isLifeData, lifeEvents, type LifeData } from "./life/model";
 import { loadLife } from "./life/store";
@@ -74,6 +90,9 @@ import { dateKey } from "./dateUtils";
 import { countdownDays, loadCountdowns } from "./countdownStore";
 import { useDailyReminders } from "./useDailyReminders";
 import { useFullscreen } from "./useFullscreen";
+import { topDialog, useFocusScope } from "./useFocusScope";
+import { useLayerMotion } from "./useLayerMotion";
+import PageLoadBoundary from "./PageLoadBoundary";
 import {
   bootstrapTasks,
   createTask,
@@ -100,7 +119,8 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.11.0";
+const FALLBACK_APP_VERSION = "0.18.0";
+const RESUMED_SYNC_VIEW = takeSyncView(sessionStorage);
 
 const horizons: Array<{
   id: Horizon;
@@ -112,6 +132,8 @@ const horizons: Array<{
   { id: "mid", label: "中期", subtitle: "未来一季", icon: CalendarDays },
   { id: "long", label: "长期", subtitle: "更远方向", icon: InfinityIcon },
 ];
+
+const TASK_BATCH_SIZE = 30;
 
 const emptyDraft: TaskDraft = {
   title: "",
@@ -192,12 +214,20 @@ function aiSettingsErrorMessage(error: unknown) {
 }
 
 export default function App() {
+  const [syncBusy, setSyncBusy] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>(() => viewAvailable(RESUMED_SYNC_VIEW) ? RESUMED_SYNC_VIEW : "overview");
+  useEffect(() => {
+    if (platform.mobile) document.querySelector(".workspace")?.scrollTo(0, 0);
+  }, [view]);
   const [search, setSearch] = useState("");
+  const [taskLimits, setTaskLimits] = useState<Record<Horizon, number>>({ short: TASK_BATCH_SIZE, mid: TASK_BATCH_SIZE, long: TASK_BATCH_SIZE });
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [advancedSettings, setAdvancedSettings] = useState(false);
+  const openPreferences = () => { setAccountOpen(false); setAdvancedSettings(false); setSettingsOpen(true); };
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft);
   const [pendingOrigin, setPendingOrigin] = useState<TaskOrigin | null>(null);
@@ -208,6 +238,25 @@ export default function App() {
   const [notebookTaskId, setNotebookTaskId] = useState<string | null>(null);
   const [notebookNotes, setNotebookNotes] = useState("");
   const [notebookBusy, setNotebookBusy] = useState(false);
+  const editorRef = useRef<HTMLElement>(null);
+  const notebookRef = useRef<HTMLElement>(null);
+  const settingsRef = useRef<HTMLElement>(null);
+  const accountRef = useRef<HTMLElement>(null);
+  const navigationRef = useRef<HTMLElement>(null);
+  useFocusScope(editorOpen, editorRef);
+  useFocusScope(Boolean(notebookTaskId), notebookRef);
+  useFocusScope(settingsOpen, settingsRef);
+  useFocusScope(accountOpen, accountRef);
+  useLayerMotion(accountOpen, accountRef);
+  useLayerMotion(settingsOpen, settingsRef);
+  useFocusScope(platform.mobile && mobileMenuOpen, navigationRef);
+  useEffect(() => {
+    if (mobileMenuOpen) navigationRef.current?.querySelector(".workspace-nav")?.scrollTo(0, 0);
+  }, [mobileMenuOpen]);
+  useEffect(() => {
+    // A new filter is a new result set; avoid preserving a large rendered page from the previous query.
+    setTaskLimits({ short: TASK_BATCH_SIZE, mid: TASK_BATCH_SIZE, long: TASK_BATCH_SIZE });
+  }, [view, search]);
   const [autostart, setAutostart] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(true);
   const [autostartBusy, setAutostartBusy] = useState(false);
@@ -227,6 +276,16 @@ export default function App() {
   const [selectedCountdownId, setSelectedCountdownId] = useState<string | null>(null);
   const [appDataReady, setAppDataReady] = useState(false);
   const [appLoadError, setAppLoadError] = useState("");
+  const infrastructure = useInfrastructure(appDataReady);
+  const hostMonitor = useHostMonitor(infrastructure.data, infrastructure.loaded && !syncBusy, infrastructure.update);
+  const [selectedHost, setSelectedHost] = useState("");
+  const calendarHostEvents = useMemo(() => hostEvents(infrastructure.data), [infrastructure.data]);
+  function openHostTask(title:string,notes:string,day:string,reference:string) {
+    if(!taskStoreReady || taskLoadError) { setToast("任务尚未成功读取，请稍后重试"); return; }
+    const existing=tasks.find(t=>t.origin?.reference===reference);
+    if(existing) { openTask(existing); return; }
+    setDraft(maintenanceDraft(title,notes,day));setEditingId(null);setPendingOrigin({kind:"local",label:"主机与服务",reference});setConfirmDelete(false);setEditorOpen(true);
+  }
   const [life, setLife] = useState<LifeData>(emptyLife);
   const lifeRef = useRef(life);
   lifeRef.current = life;
@@ -253,6 +312,13 @@ export default function App() {
   const aiPurchaseItems = useMemo(() => createMealPurchaseItems(mealPlan, mealCheckedItems), [mealCheckedItems, mealPlan]);
   const allPurchaseItems = useMemo(() => [...purchaseItems, ...aiPurchaseItems], [aiPurchaseItems, purchaseItems]);
   const goals = useGoals(appDataReady && taskStoreReady && !taskLoadError, tasks, setTasks);
+  const assistant = useAssistantState(appDataReady);
+  const automaticSync = useAutomaticSync({
+    ready: appDataReady && taskStoreReady && goals.loaded && lifeReady && infrastructure.loaded && assistant.loaded,
+    blocked: syncBusy || taskBusy || notebookBusy || backupBusy || editorOpen || !!notebookTaskId || settingsOpen || accountOpen
+      || mobileMenuOpen || goals.busy || !!goals.error || !!appLoadError || !!taskLoadError || !!lifeError || !!infrastructure.error,
+    view, saved: tasks, savedGoals: goals.state, onBusy: setSyncBusy,
+  });
   const [goalActionId, setGoalActionId] = useState("");
   const goalAction = goals.state.actions.find(a=>a.id===goalActionId);
   const goalTask = tasks.find(t=>t.id===goalAction?.taskId);
@@ -260,6 +326,7 @@ export default function App() {
   const goalSeed = goalAction && goalTask && !goalAction.targetId ? {id:goalAction.id,title:goalTask.title,notes:goalTask.notes,startDate:goalTask.startDate,dueDate:goalTask.dueDate,conditions:goalAction.conditions} : undefined;
   useGoalRhythm(goals,tasks,life,reminderSettings,allPurchaseItems);
   function openGoalAction(action:GoalAction) {
+    if (!viewAvailable(destinationView(action))) { setToast("这项操作需要在桌面端继续；任务和笔记仍可在手机查看。"); return; }
     const task=tasks.find(t=>t.id===action.taskId);
     if(!task){setToast("关联任务已删除，请在整理台重新关联");return;}
     if(action.targetId && !goalTargets.some(t=>t.id===action.targetId&&t.destination===action.destination)){setToast("关联业务对象已删除或不可用，请在整理台修改执行入口");return;}
@@ -268,10 +335,6 @@ export default function App() {
     setLifeSelection(action.targetId?{id:action.targetId,date:action.targetDate||goalTargets.find(t=>t.id===action.targetId)?.date||dateKey()}:undefined);
     setView(destinationView(action));setMobileMenuOpen(false);
   }
-  async function organizeThought(text:string) {
-    if(text.trim())await goals.update(s=>({...s,thoughts:[...s.thoughts,{id:crypto.randomUUID(),text:text.slice(0,12000),status:"inbox",createdAt:new Date().toISOString()}]}));
-    setGoalActionId("");setView("goals");setMobileMenuOpen(false);
-  }
   useEffect(()=>{
     if(!goalAction||goalAction.targetId||!goals.loaded)return;
     const target=goalTargets.find(t=>t.id===goalAction.id&&t.destination===goalAction.destination);
@@ -279,7 +342,30 @@ export default function App() {
   },[life,goalActionId]);
   const { fullscreen, busy: fullscreenBusy, toggle: toggleFullscreen } = useFullscreen(setToast);
   const nextGoalAction = nextActions(goals.state,tasks,life,undefined,allPurchaseItems).ready[0];
-  const { available: notificationAvailable, sendTest } = useDailyReminders(tasks, countdowns, reminderSettings, calendarLifeEvents, appDataReady && lifeReady && taskStoreReady, goals.state.preferences.checkins && nextGoalAction ? `下一步：${nextGoalAction.task?.title}，约 ${nextGoalAction.action.minutes} 分钟。打开总览开始。` : "");
+  const { available: notificationAvailable, sendTest, mobileStatus: mobileReminderStatus, mobileDetails, mobileChecking, refreshMobile } = useDailyReminders(tasks, countdowns, reminderSettings, calendarLifeEvents, appDataReady && lifeReady && taskStoreReady, (goals.state.preferences.checkins && nextGoalAction ? `下一步：${nextGoalAction.task?.title}，约 ${nextGoalAction.action.minutes} 分钟。打开总览开始。` : ""), infrastructure.data);
+
+  useEffect(() => {
+    if (!platform.mobile) return;
+    const host = window as Window & { __tideplanBack?: () => boolean };
+    host.__tideplanBack = () => {
+      if (document.querySelector(".sync-working")) return true;
+      if (document.querySelector(".date-picker-popover")) {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        return true;
+      }
+      const dialog = topDialog();
+      if (dialog) {
+        const close = dialog.querySelector<HTMLButtonElement>('button[aria-label^="关闭"]:not(:disabled)');
+        if (close) close.click();
+        else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        return true;
+      }
+      if (mobileMenuOpen) { setMobileMenuOpen(false); return true; }
+      if (view !== "overview") { setView("overview"); setGoalActionId(""); return true; }
+      return false;
+    };
+    return () => { delete host.__tideplanBack; };
+  }, [view, mobileMenuOpen]);
 
   useEffect(()=>{
     if(!appDataReady)return;
@@ -395,7 +481,7 @@ export default function App() {
   }, [appDataReady, countdowns]);
 
   useEffect(() => {
-    if (!isTauri()) {
+    if (!platform.desktop) {
       setAutostartAvailable(false);
       return;
     }
@@ -403,9 +489,10 @@ export default function App() {
     let active = true;
     const prepareAutostart = async () => {
       try {
-        if (!localStorage.getItem(AUTOSTART_INITIALIZED_KEY)) {
+        // Autostart belongs to this installation, not the signed-in user.
+        if (!globalThis.localStorage.getItem(AUTOSTART_INITIALIZED_KEY)) {
           await enable();
-          localStorage.setItem(AUTOSTART_INITIALIZED_KEY, "true");
+          globalThis.localStorage.setItem(AUTOSTART_INITIALIZED_KEY, "true");
         }
         const value = await isEnabled();
         if (active) setAutostart(value);
@@ -422,19 +509,23 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setEditorOpen(false);
-        setSettingsOpen(false);
-        setNotebookTaskId(null);
-        setMobileMenuOpen(false);
+        if (document.querySelector(".sync-working")) return;
+        const dialog = topDialog();
+        if (dialog === editorRef.current && !taskBusy) setEditorOpen(false);
+        else if (dialog === settingsRef.current && !syncBusy) setSettingsOpen(false);
+        else if (dialog === accountRef.current && !syncBusy) setAccountOpen(false);
+        else if (dialog === notebookRef.current && !notebookBusy) setNotebookTaskId(null);
+        else if (!dialog || dialog === navigationRef.current) setMobileMenuOpen(false);
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
+        if (document.querySelector('[role="dialog"]')) return;
         event.preventDefault();
         openNewTask("short");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [taskBusy, notebookBusy, syncBusy]);
 
   useEffect(() => {
     if (!toast) return;
@@ -443,6 +534,7 @@ export default function App() {
   }, [toast]);
 
   useEffect(() => {
+    if (!platform.workMonitor) return;
     void runScheduledWorkScan()
       .then((result) => {
         if (result) {
@@ -454,7 +546,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (view !== "overview") return;
+    if (view !== "overview" || !platform.workMonitor) return;
     void getWorkDashboard().then(setWorkOverview).catch(() => setWorkOverview(null));
   }, [view]);
 
@@ -678,7 +770,7 @@ export default function App() {
       if (autostart) await disable();
       else await enable();
       setAutostart(!autostart);
-      localStorage.setItem(AUTOSTART_INITIALIZED_KEY, "true");
+      globalThis.localStorage.setItem(AUTOSTART_INITIALIZED_KEY, "true");
     } catch {
       setAutostartAvailable(false);
     } finally {
@@ -705,7 +797,7 @@ export default function App() {
   }
 
   async function handleWindowAction(action: "minimize" | "close" | "pin") {
-    if (!isTauri()) return;
+    if (!platform.desktop) return;
     const appWindow = getCurrentWindow();
     if (action === "minimize") await appWindow.minimize();
     if (action === "close") await appWindow.close();
@@ -718,7 +810,7 @@ export default function App() {
   }
 
   async function beginDrag(event: React.MouseEvent) {
-    if (event.button === 0 && isTauri() && !fullscreen) await getCurrentWindow().startDragging();
+    if (event.button === 0 && platform.desktop && !fullscreen) await getCurrentWindow().startDragging();
   }
 
   async function testNotification() {
@@ -817,7 +909,7 @@ export default function App() {
     setView("countdowns");
   }
 
-  const title = view === "goals" ? "想法与目标" : view === "people" ? "人物档案" : view === "fitness" ? "训练计划" : view === "travel" ? "旅行规划" : view === "bead-studio" ? "拼豆图纸" : view === "overview"
+  const title = view === "infrastructure" ? "主机与服务" : view === "goals" ? "想法与目标" : view === "people" ? "人物档案" : view === "fitness" ? "训练计划" : view === "travel" ? "旅行规划" : view === "bead-studio" ? "拼豆图纸" : view === "overview"
     ? "今日总览"
     : view === "today"
     ? "今日计划"
@@ -835,7 +927,7 @@ export default function App() {
         ? "完成记录"
         : "所有计划";
   const subtitle =
-    view === "goals" ? "先放下所有线索，再找到此刻可以走的一步。" : view === "people" ? "把关心的人与他们的偏好，变成计划的基础。" : view === "fitness" ? "让每个训练周期都有可执行的目标和真实记录。" : view === "travel" ? "从同行者的偏好出发，把日程连成路线。" : view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
+    view === "infrastructure" ? "看清每台主机的用途、运行状况与下一步维护。" : view === "goals" ? "先放下所有线索，再找到此刻可以走的一步。" : view === "people" ? "把关心的人与他们的偏好，变成计划的基础。" : view === "fitness" ? "让每个训练周期都有可执行的目标和真实记录。" : view === "travel" ? "从同行者的偏好出发，把日程连成路线。" : view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
       ? "把计划、时间、生活与工作放进同一条节奏里。"
       : view === "today"
       ? overdueCount
@@ -856,7 +948,7 @@ export default function App() {
           : "按照时间跨度，安排手边与远方。";
 
   return (
-    <div className={`desktop-shell${fullscreen ? " is-fullscreen" : ""}`}>
+    <div className={`desktop-shell${platform.mobile ? " mobile-shell" : ""}${fullscreen ? " is-fullscreen" : ""}`}>
       <header className="titlebar" onMouseDown={beginDrag}>
         <button
           className="titlebar-menu"
@@ -867,26 +959,16 @@ export default function App() {
         >
           <Menu size={17} />
         </button>
-        <div className="titlebar-brand" aria-label="潮汐计划">
-          <span className="brand-mark"><Check size={13} strokeWidth={3} /></span>
-          <span>潮汐计划</span>
+        <div className="titlebar-brand" aria-label="Oceanseo">
+          <span className="brand-mark" aria-hidden="true"><img src="/brand/hedgehog.png" alt="" width="32" height="32" draggable={false} /></span>
+          <span>Oceanseo</span>
         </div>
         <SaveStatus ready={appDataReady} goals={{ loaded: goals.loaded, busy: goals.busy, error: goals.error, onInspect: () => { setGoalActionId(""); setView("goals"); } }} />
-        <Assistant
-          storageReady={appDataReady}
-          data={{ tasks, countdowns, life, purchases: allPurchaseItems, mealPlan, work: workOverview, goals: goals.state, ready: appDataReady && taskStoreReady && lifeReady && goals.loaded && !taskLoadError && !appLoadError && !lifeError, view }}
-          ai={aiSettings}
-          onNavigate={next => { setGoalActionId(""); setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }}
-          onSettings={() => setSettingsOpen(true)}
-          onOrganize={organizeThought}
-          onDraft={(next, name) => {
-            if (editorOpen || taskBusy || localStorage.getItem(taskDraftKey(null))) throw Error("新计划编辑器已有未完成草稿，请先保存或放弃该草稿，再打开这份计划。");
-            localStorage.setItem(taskDraftKey(null), JSON.stringify(next));
-            setEditingId(null); setPendingOrigin({ kind: "local", label: `${name} · 助手草稿`, reference: null });
-            setDraft(next); setConfirmDelete(false); setEditorOpen(true);
-          }}
-        />
-        <div className="window-actions" onMouseDown={(event) => event.stopPropagation()}>
+        {automaticSync.status.state === "paused" && <button className="sync-status-button icon-button" type="button" aria-label="查看账号状态" title="账号有内容需要处理" onMouseDown={e => e.stopPropagation()} onClick={() => setAccountOpen(true)}><Cloud size={18} /></button>}
+        {!platform.mobile && <GoalChatLauncher name={assistant.state.persona.name} onOpen={()=>{setGoalActionId("");setView("goals");setMobileMenuOpen(false);}}/>}
+        <button className="account-entry icon-button" type="button" aria-label="我的账号" title="我的账号" onMouseDown={event => event.stopPropagation()} onClick={() => { setSettingsOpen(false); setAccountOpen(true); }}><UserRound size={20} /></button>
+        {platform.mobile && <button className="mobile-settings" type="button" aria-label="偏好设置" onClick={openPreferences}><Settings size={20}/></button>}
+        {!platform.mobile && <div className="window-actions" onMouseDown={(event) => event.stopPropagation()}>
           <button
             className={alwaysOnTop ? "is-active" : ""}
             type="button"
@@ -914,17 +996,18 @@ export default function App() {
           <button className="window-close" type="button" onClick={() => void handleWindowAction("close")} aria-label="隐藏到托盘" title="隐藏到托盘">
             <X size={15} />
           </button>
-        </div>
+        </div>}
       </header>
 
       <div className="app-layout">
-        <aside className={`sidebar ${mobileMenuOpen ? "is-open" : ""}`}>
+        <aside ref={navigationRef} className={`sidebar ${mobileMenuOpen ? "is-open" : ""}`} inert={platform.mobile && !mobileMenuOpen} role={platform.mobile && mobileMenuOpen ? "dialog" : undefined} aria-modal={platform.mobile && mobileMenuOpen ? true : undefined} aria-label={platform.mobile ? "工具导航" : undefined} tabIndex={-1}>
+          {platform.mobile && <div className="mobile-tools-head"><strong>工具</strong><button className="icon-button" type="button" aria-label="关闭导航" title="关闭导航" onClick={() => setMobileMenuOpen(false)}><X size={20} /></button></div>}
           <div className="sidebar-date">
             <span>{formatHeaderDate()}</span>
             <strong>{currentGreeting()}</strong>
           </div>
 
-          <WorkspaceNav view={view} onNavigate={next => { setGoalActionId(""); setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }} />
+          <WorkspaceNav view={view} onNavigate={next => { if (!viewAvailable(next)) return; setGoalActionId(""); setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }} />
 
           <section className="progress-panel" aria-label="计划进度">
             <div className="progress-heading">
@@ -938,7 +1021,8 @@ export default function App() {
           </section>
 
           <div className="sidebar-footer">
-            <button type="button" onClick={() => setSettingsOpen(true)}>
+            <button type="button" onClick={() => { setMobileMenuOpen(false); setAccountOpen(true); }}><UserRound size={18} /><span>我的账号</span><ChevronRight size={16} /></button>
+            <button type="button" onClick={() => { setMobileMenuOpen(false); openPreferences(); }}>
               <Settings size={18} />
               <span>偏好设置</span>
               <ChevronRight size={16} />
@@ -948,7 +1032,7 @@ export default function App() {
 
         {mobileMenuOpen && <button className="sidebar-scrim" aria-label="关闭导航" onClick={() => setMobileMenuOpen(false)} />}
 
-        <main className="workspace">
+        <main className={`workspace ${view==="goals"?"workspace-conversation":""}`} inert={platform.mobile && mobileMenuOpen}>
           <section className="workspace-head">
             <div>
               <span className="eyebrow">{formatHeaderDate()}</span>
@@ -979,9 +1063,12 @@ export default function App() {
 
           {goalAction&&goalTask&&view===destinationView(goalAction)&&goalAction.destination!=="task"&&<section className="goal-handoff"><div><small>来自目标 · {goals.state.goals.find(g=>g.id===goalAction.goalId)?.title}</small><strong>{goalTask.title}</strong>{goalTask.notes&&<p>{goalTask.notes}</p>}</div><button onClick={()=>openNotebook(goalTask)}>事项记事本</button><button onClick={()=>void toggleTask(goalTask.id)}>{goalTask.completedAt?"恢复未完成":"这一步已完成"}</button><button onClick={()=>{setGoalActionId("");setView("goals");}}>返回目标</button></section>}
           {view==="overview"&&goals.loaded&&<GoalFocus state={goals.state} tasks={tasks} life={life} purchases={allPurchaseItems} onOpen={openGoalAction} onOrganize={()=>setView("goals")}/>}
-          {!appDataReady ? <div role="status"><p>{appLoadError || "正在读取本机数据…"}</p>{appLoadError && <button className="secondary-button" onClick={() => window.location.reload()}>重新载入</button>}</div> : view==="goals" ? <Suspense fallback={<p role="status">正在打开整理台…</p>}><GoalWorkspace controller={goals} tasks={tasks} life={life} purchases={allPurchaseItems} targets={goalTargets} configured={aiSettings?.apiKeyConfigured??false} onSettings={()=>setSettingsOpen(true)} onOpen={openGoalAction} onTask={openNotebook} onComplete={id=>void toggleTask(id)}/></Suspense> : ["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="fitness"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="travel"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? <BeadStudio /> : view === "overview" ? (
+          <PageLoadBoundary key={view}><Suspense fallback={<p className="workspace-loading" role="status" data-page-loading>正在打开{title}…</p>}>
+          {!appDataReady ? <div role="status"><p>{appLoadError || "正在读取本机数据…"}</p>{appLoadError && <button className="secondary-button" onClick={() => window.location.reload()}>重新载入</button>}</div> : view === "infrastructure" ? <HostPanel data={infrastructure.data} ready={infrastructure.loaded} error={infrastructure.error} update={infrastructure.update} selected={selectedHost} onSelect={setSelectedHost} tasks={tasks} onTask={openHostTask} monitor={hostMonitor} onToast={setToast} onAiSettings={()=>setSettingsOpen(true)}/> : view==="goals" ? <Suspense fallback={<p role="status">正在打开对话…</p>}><GoalWorkspace controller={goals} tasks={tasks} life={life} purchases={allPurchaseItems} targets={goalTargets} assistant={assistant} workspaceData={{tasks,countdowns,life,purchases:allPurchaseItems,mealPlan,work:workOverview,goals:goals.state,infrastructure:infrastructure.data,ready:goals.loaded,view}} configured={aiSettings?.apiKeyConfigured??false} onSettings={()=>setSettingsOpen(true)} onOpen={openGoalAction}/></Suspense> : ["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="fitness"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="travel"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? <BeadStudio onSettings={()=>setSettingsOpen(true)} /> : view === "overview" ? (
             <HomeDashboard
               lifeEvents={calendarLifeEvents}
+              hostEvents={calendarHostEvents}
+              onOpenHost={event=>{setSelectedHost(event.hostId);setView("infrastructure");}}
               onOpenLife={event => { setLifeSelection({ id: event.targetId, date: event.date }); setView(event.kind === "training" ? "fitness" : "travel"); }}
               tasks={tasks}
               countdowns={countdowns}
@@ -989,6 +1076,7 @@ export default function App() {
               mealPlan={mealPlan}
               workDashboard={workOverview}
               reminderSettings={reminderSettings}
+              reminderAvailable={notificationAvailable}
               onOpenTask={openTask}
               onOpenCountdown={openCountdown}
               onNavigate={setView}
@@ -1035,6 +1123,8 @@ export default function App() {
               onOpenCountdown={openCountdown}
               onNewTask={(startDate) => openNewTask("short", startDate)}
               lifeEvents={calendarLifeEvents}
+              hostEvents={calendarHostEvents}
+              onOpenHost={event=>{setSelectedHost(event.hostId);setView("infrastructure");}}
               onOpenLife={event=>{setLifeSelection({id:event.targetId,date:event.date});setView(event.kind==="training"?"fitness":"travel");}}
             />
           ) : view === "countdowns" ? (
@@ -1063,6 +1153,9 @@ export default function App() {
               <section className="board" aria-label="计划看板">
             {horizons.map((horizon) => {
               const columnTasks = visibleTasks.filter((task) => task.horizon === horizon.id);
+              const taskLimit = taskLimits[horizon.id];
+              const renderedTasks = columnTasks.slice(0, taskLimit);
+              const remainingTasks = columnTasks.length - renderedTasks.length;
               const HorizonIcon = horizon.icon;
               return (
                 <section className={`board-column horizon-${horizon.id}`} key={horizon.id}>
@@ -1079,7 +1172,7 @@ export default function App() {
                   </header>
 
                   <div className="task-list">
-                    {columnTasks.map((task) => (
+                    {renderedTasks.map((task) => (
                       <article className={`task-card ${task.completedAt ? "is-completed" : ""}`} key={task.id}>
                         <button className="check-button" type="button" onClick={() => void toggleTask(task.id)} aria-label={task.completedAt ? "恢复计划" : "完成计划"}>
                           {task.completedAt ? <CheckCircle2 size={19} /> : <Circle size={19} />}
@@ -1115,6 +1208,19 @@ export default function App() {
                       </article>
                     ))}
 
+                    {remainingTasks > 0 && (
+                      <button
+                        className="load-more-tasks"
+                        type="button"
+                        onClick={() => setTaskLimits((limits) => ({
+                          ...limits,
+                          [horizon.id]: limits[horizon.id] + TASK_BATCH_SIZE,
+                        }))}
+                      >
+                        加载更多计划 · 还有 {remainingTasks} 项
+                      </button>
+                    )}
+
                     {!columnTasks.length && (
                       <button className="empty-column" type="button" onClick={() => openNewTask(horizon.id)}>
                         <span><Plus size={16} /></span>
@@ -1129,18 +1235,25 @@ export default function App() {
               </section>
             </>
           )}
+          </Suspense></PageLoadBoundary>
         </main>
       </div>
 
+      {platform.mobile && (
+        <MobileNav view={view} toolsOpen={mobileMenuOpen}
+          onTools={() => setMobileMenuOpen(value => !value)}
+          onNavigate={next => { setGoalActionId(""); setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }} />
+      )}
+
       {editorOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setEditorOpen(false)}>
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => { if (!taskBusy) setEditorOpen(false); }}>
+          <section ref={editorRef} tabIndex={-1} className="modal" role="dialog" aria-modal="true" aria-labelledby="editor-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="modal-head">
               <div>
-                <span>{editingId ? "编辑计划" : pendingOrigin?.label?.endsWith("助手草稿") ? "助手计划草稿" : pendingOrigin ? "外部计划草稿" : "新的计划"}</span>
+                <span>{editingId ? "编辑计划" : pendingOrigin?.label === "主机与服务" ? "主机维护草稿" : pendingOrigin?.label?.endsWith("助手草稿") ? "助手计划草稿" : pendingOrigin ? "外部计划草稿" : "新的计划"}</span>
                 <h2 id="editor-title">{editingId ? "调整接下来的方向" : pendingOrigin ? "确认后再加入计划" : "记下想完成的事"}</h2>
               </div>
-              <button className="icon-button" type="button" onClick={() => setEditorOpen(false)} aria-label="关闭" title="关闭">
+              <button className="icon-button" type="button" disabled={taskBusy} onClick={() => setEditorOpen(false)} aria-label="关闭" title="关闭">
                 <X size={18} />
               </button>
             </header>
@@ -1149,13 +1262,13 @@ export default function App() {
               {pendingOrigin && (
                 <div className="deep-link-review" role="status">
                   <span>待审核草稿</span>
-                  <p>{pendingOrigin.label?.endsWith("助手草稿") ? "助手只预填了计划信息，请检查日期和内容，保存后才会加入计划。" : "链接只预填了计划信息，保存前仍可修改。"}</p>
+                  <p>{pendingOrigin.label === "主机与服务" ? "从主机面板预填的维护事项，请核对内容与日期。保存任务不会执行服务器操作或付款。" : pendingOrigin.label?.endsWith("助手草稿") ? "助手只预填了计划信息，请检查日期和内容，保存后才会加入计划。" : "链接只预填了计划信息，保存前仍可修改。"}</p>
                   {pendingOrigin.label && <small>来源：{pendingOrigin.label}</small>}
                 </div>
               )}
               <label className="form-field">
                 <span>计划名称</span>
-                <input autoFocus maxLength={200} value={draft.title} onChange={(event) => changeTaskDraft({ ...draft, title: event.target.value })} placeholder="例如：整理本周工作重点" />
+                <input data-dialog-initial maxLength={200} value={draft.title} onChange={(event) => changeTaskDraft({ ...draft, title: event.target.value })} placeholder="例如：整理本周工作重点" />
               </label>
 
               <fieldset className="form-field">
@@ -1207,7 +1320,7 @@ export default function App() {
                 )}
                 <span className="action-spacer" />
                 <button className="secondary-button" type="button" disabled={taskBusy} onClick={() => { localStorage.removeItem(taskDraftKey(editingId)); setEditorOpen(false); }}>放弃草稿</button>
-                <button className="secondary-button" type="button" onClick={() => setEditorOpen(false)}>暂存并关闭</button>
+                <button className="secondary-button" type="button" disabled={taskBusy} onClick={() => setEditorOpen(false)}>暂存并关闭</button>
                 <button className="primary-button" type="submit" disabled={!draft.title.trim() || taskBusy}>
                   <Check size={17} />保存计划
                 </button>
@@ -1218,14 +1331,14 @@ export default function App() {
       )}
 
       {notebookTask && (
-        <div className="modal-backdrop notebook-backdrop" role="presentation" onMouseDown={() => setNotebookTaskId(null)}>
-          <section className="modal notebook-modal" role="dialog" aria-modal="true" aria-labelledby="notebook-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop notebook-backdrop" role="presentation" onMouseDown={() => { if (!notebookBusy) setNotebookTaskId(null); }}>
+          <section ref={notebookRef} tabIndex={-1} className="modal notebook-modal" role="dialog" aria-modal="true" aria-labelledby="notebook-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="modal-head notebook-head">
               <div>
                 <span>事项记事本</span>
                 <h2 id="notebook-title">{notebookTask.title}</h2>
               </div>
-              <button className="icon-button" type="button" onClick={() => setNotebookTaskId(null)} aria-label="关闭记事本" title="关闭">
+              <button className="icon-button" type="button" disabled={notebookBusy} onClick={() => setNotebookTaskId(null)} aria-label="关闭记事本" title="关闭">
                 <X size={18} />
               </button>
             </header>
@@ -1234,7 +1347,7 @@ export default function App() {
               <textarea
                 id="task-notebook"
                 disabled={notebookBusy}
-                autoFocus
+                data-dialog-initial
                 maxLength={4000}
                 value={notebookNotes}
                 onChange={(event) => changeNotebookNotes(event.target.value)}
@@ -1243,7 +1356,7 @@ export default function App() {
               <footer>
                 <span>{notebookNotes.length} / 4000</span>
                 <button className="secondary-button" type="button" disabled={notebookBusy} onClick={() => { localStorage.removeItem(notebookDraftKey(notebookTask.id)); setNotebookNotes(notebookTask.notes); }}>放弃草稿</button>
-                <button className="secondary-button" type="button" onClick={() => setNotebookTaskId(null)}>取消</button>
+                <button className="secondary-button" type="button" disabled={notebookBusy} onClick={() => setNotebookTaskId(null)}>取消</button>
                 <button className="primary-button" type="submit" disabled={notebookBusy}>
                   <Save size={16} />{notebookBusy ? "正在保存" : "保存笔记"}
                 </button>
@@ -1253,21 +1366,30 @@ export default function App() {
         </div>
       )}
 
+      {accountOpen && <div className="modal-backdrop" role="presentation" onMouseDown={() => { if (!syncBusy) setAccountOpen(false); }}>
+        <section ref={accountRef} tabIndex={-1} className="modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title" onMouseDown={event => event.stopPropagation()}>
+          <header className="modal-head"><div><span>Oceanseo</span><h2 id="account-title">我的账号</h2></div>
+            <button className="icon-button" type="button" disabled={syncBusy} aria-label="关闭" title="关闭" onClick={() => setAccountOpen(false)}><X size={18} /></button>
+          </header>
+          <AccountCenter automatic={automaticSync} onBusy={setSyncBusy} />
+        </section>
+      </div>}
+
       {settingsOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
-          <section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => { if (!syncBusy) setSettingsOpen(false); }}>
+          <section ref={settingsRef} tabIndex={-1} className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="modal-head">
               <div>
-                <span>潮汐计划</span>
+                <span>Oceanseo</span>
                 <h2 id="settings-title">偏好设置</h2>
               </div>
-              <button className="icon-button" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭" title="关闭"><X size={18} /></button>
+              <button className="icon-button" type="button" disabled={syncBusy} onClick={() => setSettingsOpen(false)} aria-label="关闭" title="关闭"><X size={18} /></button>
             </header>
-            <div className="setting-row">
+            {!platform.mobile && <div className="setting-row">
               <div className="setting-icon"><Sparkles size={18} /></div>
               <div>
                 <strong>开机自动启动</strong>
-                <p>{autostartAvailable ? "登录桌面后，自动打开潮汐计划。" : "请在 Linux 桌面应用中设置。"}</p>
+                <p>{autostartAvailable ? "登录桌面后，自动打开 Oceanseo。" : "请在 Linux 桌面应用中设置。"}</p>
               </div>
               <button
                 type="button"
@@ -1278,12 +1400,12 @@ export default function App() {
                 aria-checked={autostart}
                 aria-label="开机自动启动"
               ><span /></button>
-            </div>
+            </div>}
             <div className="setting-row reminder-setting-row">
               <div className="setting-icon notification-icon">{reminderSettings.enabled ? <BellRing size={18} /> : <Bell size={18} />}</div>
               <div>
                 <strong>每日计划提醒</strong>
-                <p>{notificationAvailable ? "窗口隐藏到托盘后仍会按时提醒。" : "请在 Linux 桌面应用中授权通知。"}</p>
+                <p role="status">{platform.mobile ? mobileReminderStatus : notificationAvailable ? "窗口隐藏到托盘后仍会按时提醒。" : "请在桌面应用中授权通知。"}</p>
               </div>
               <button
                 type="button"
@@ -1303,11 +1425,12 @@ export default function App() {
                 <span>晚间</span>
                 <input type="time" value={reminderSettings.times[1]} onChange={(event) => setReminderTime(1, event.target.value)} disabled={!reminderSettings.enabled} />
               </label>
-              <button className="test-notification" type="button" onClick={() => void testNotification()} disabled={!notificationAvailable || !reminderSettings.enabled}>
-                <Bell size={14} />测试通知
+              <button className="test-notification" type="button" onClick={() => void testNotification()} disabled={!isTauri() || !reminderSettings.enabled}>
+                <Bell size={14} />{platform.mobile ? "授权并测试通知" : "测试通知"}
               </button>
             </div>
-            <div className={`countdown-reminder-setting ${!reminderSettings.enabled ? "is-disabled" : ""}`}>
+            {platform.name === "android" && <MobileReminderPanel status={mobileDetails} checking={mobileChecking} onRefresh={refreshMobile} />}
+            {!platform.mobile && <div className={`countdown-reminder-setting ${!reminderSettings.enabled ? "is-disabled" : ""}`}>
               <Hourglass size={15} />
               <label>
                 <span>关键日期提前提醒</span>
@@ -1328,13 +1451,15 @@ export default function App() {
                 </span>
               </label>
               <p>每日提醒会同时列出临近的关键日期，设为 0 时只提醒当天。</p>
-            </div>
+            </div>}
+            <details className="advanced-settings" open={advancedSettings} onToggle={event => setAdvancedSettings(event.currentTarget.open)}>
+              <summary><SlidersHorizontal size={18} />高级与开发者设置</summary>
             <section className="ai-settings-section" aria-label="AI 服务配置">
               <header>
                 <span className="setting-icon ai-setting-icon"><KeyRound size={18} /></span>
                 <div>
                   <strong>AI 服务</strong>
-                  <p>内置助手、工作周报、AI 食谱、训练与旅行 Agent 共用此配置。服务需支持 Responses API；内置助手还需支持 function calling。</p>
+                  <p>小汐、工作周报、食谱、训练、旅行与拼豆 AI 共用此配置。服务需支持 Responses 结构化输出；拼豆 AI 还需要图片输入和图片生成工具。</p>
                 </div>
                 <span className={`ai-config-state ${aiSettings?.apiKeyConfigured ? "is-ready" : ""}`}>
                   {aiSettings?.apiKeyConfigured ? `已配置 ${aiSettings.apiKeyHint ?? ""}` : "未配置"}
@@ -1371,7 +1496,7 @@ export default function App() {
                   </label>
                 </div>
                 <footer>
-                  <span>{aiSettingsError || "密钥保存在本机应用数据目录，仅当前用户可读取。"}</span>
+                  <span>{aiSettingsError || (platform.mobile ? "密钥经 Android 安全存储加密后保存在本机，不包含在数据备份中。" : "密钥保存在本机应用数据目录，仅当前用户可读取。")}</span>
                   <div>
                     <button className="secondary-button" type="button" disabled={aiSettingsBusy || !aiSettings?.apiKeyConfigured} onClick={async () => {
                       setAiSettingsBusy(true); setAiSettingsError("正在测试已保存的配置…");
@@ -1385,14 +1510,15 @@ export default function App() {
               <p>连接测试会发送不含个人资料的小型请求，可能消耗服务额度。先保存修改，再测试。</p>
             </section>
             <MapSettings />
+            <details className="technical-sync"><summary>同步诊断与兼容连接</summary><SyncSettings onBusy={setSyncBusy} automatic={automaticSync} /></details>
+            </details>
             <section className="data-backup-section" aria-label="数据备份与恢复">
               <header>
                 <span className="setting-icon backup-setting-icon"><DatabaseBackup size={18} /></span>
                 <div>
                   <strong>数据备份与恢复</strong>
-                  <p>导出计划、人物档案、训练记录、旅行、食谱、采购、拼豆图纸与提醒设置，不包含 AI 或地图密钥。</p>
+                  <p>导出计划、人物、生活安排、拼豆图纸、主机与服务档案及提醒设置，不包含 AI、地图、同步或采集令牌。恢复旧备份后的任务修改与删除会在下次确认同步时传播。</p>
                 </div>
-                <span className="sqlite-state"><ShieldCheck size={12} />SQLite</span>
               </header>
               <div className="backup-actions">
                 <button className="secondary-button" type="button" onClick={() => void handleExportBackup()} disabled={backupBusy || !isTauri()}><Download size={15} />导出备份</button>
@@ -1413,8 +1539,8 @@ export default function App() {
               {sessionStorage.getItem("tideplan.restore-snapshot") && <p className="backup-error">上次恢复前的数据副本：{sessionStorage.getItem("tideplan.restore-snapshot")}</p>}
             </section>
             <div className="setting-note">
-              <span className="brand-mark"><Check size={12} strokeWidth={3} /></span>
-              <p>个人数据保存在本机 SQLite 数据库中。</p>
+              <span className="brand-mark" aria-hidden="true"><img src="/brand/hedgehog.png" alt="" width="32" height="32" draggable={false} /></span>
+              <p>本机记录与账号记录分别保留。</p>
               <small>版本 {appVersion}</small>
             </div>
           </section>
@@ -1422,6 +1548,11 @@ export default function App() {
       )}
 
       {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
+      {(syncBusy || automaticSync.reloadRequired) && <div className="sync-working" role="dialog" aria-modal="true" aria-label="正在处理同步" tabIndex={-1} ref={el => { (el?.querySelector<HTMLButtonElement>('button') ?? el)?.focus(); }} onKeyDown={e => { if (e.key === "Tab") e.preventDefault(); }}>
+        <div><Cloud size={30} /><p role="status">{automaticSync.reloadRequired ? "同步已保存，正在重新载入…" : "正在处理账号或同步，请稍候…"}</p>
+          {automaticSync.reloadRequired ? <><small>若页面未刷新，可重试载入或重新打开应用。本机数据已保留。</small><button className="secondary-button" type="button" onClick={automaticSync.retryReload}><RotateCcw size={15} />重新载入</button></> : <small>请保持应用打开。连接超时后可重试。</small>}
+        </div>
+      </div>}
     </div>
   );
 }

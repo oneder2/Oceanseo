@@ -1,4 +1,6 @@
-import { isTauri } from "@tauri-apps/api/core";
+import { profileLocalStorage as localStorage } from "./profileStorage";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { platform } from "./platform";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import type { MealPlan, PurchaseItem, PurchaseItemDraft, ShoppingExportFormat } from "./types";
@@ -195,10 +197,21 @@ function csvContent(items: PurchaseItem[]) {
   return `\uFEFF${rows.join("\r\n")}\r\n`;
 }
 
-export async function exportPurchaseItems(items: PurchaseItem[], format: ShoppingExportFormat) {
+export function purchaseExportDocument(items: PurchaseItem[], format: ShoppingExportFormat) {
   const content = format === "csv" ? csvContent(items) : markdownContent(items);
   const extension = format === "csv" ? "csv" : "md";
   const fileName = `采购清单-${new Date().toISOString().slice(0, 10)}.${extension}`;
+  return { content, extension, fileName };
+}
+
+export async function sharePurchaseItems(items: PurchaseItem[], format: ShoppingExportFormat) {
+  if (!isTauri() || platform.name !== "android") throw Error("请在 Android 应用中分享清单。");
+  const { content } = purchaseExportDocument(items, format);
+  await invoke("share_mobile_shopping_list", { format, content });
+}
+
+export async function exportPurchaseItems(items: PurchaseItem[], format: ShoppingExportFormat) {
+  const { content, extension, fileName } = purchaseExportDocument(items, format);
 
   if (isTauri()) {
     const outputPath = await save({

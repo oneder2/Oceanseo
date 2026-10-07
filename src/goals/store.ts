@@ -1,8 +1,10 @@
+import { profileLocalStorage as localStorage } from "../profileStorage";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import { assertAppWritable, registerStateFlusher } from "../appDataStore";
 import { replacePreviewTasks, toTask, type TaskRecord } from "../taskStore";
 import type { Task } from "../types";
+import { executeDelivery } from "./dialogue";
 import {
   applyProposal,
   emptyGoals,
@@ -88,6 +90,7 @@ export function useGoals(
   type Change = {
     next: GoalState;
     created?: Task[];
+    updated?: Task[];
     checks?: { id: string; updatedAt: string }[];
     undo?: boolean;
   };
@@ -110,6 +113,7 @@ export function useGoals(
         {
           next,
           created = [],
+          updated: changed = [],
           checks = [],
           undo = false,
         } = build(old, taskRef.current, operationId);
@@ -129,6 +133,7 @@ export function useGoals(
           operationId,
           next,
           createTasks: created.map(record),
+          updateTasks: changed.map(record),
           checks,
           undo,
         };
@@ -154,7 +159,7 @@ export function useGoals(
           )
         )
           throw Error("关联任务已变化，请重新整理");
-        let updated = [...taskRef.current, ...created];
+        let updated = [...taskRef.current.map(t=>changed.find(n=>n.id===t.id)??t), ...created];
         if (undo) {
           if (
             !old.undo ||
@@ -172,6 +177,11 @@ export function useGoals(
             throw Error("方案或任务已变化，无法整批撤销");
           const remove = new Set(old.undo.createdTasks.map((t) => t.id));
           updated = updated.filter((t) => !remove.has(t.id));
+          for(const pair of old.undo.updatedTasks??[]) {
+            const present=taskRef.current.find(t=>t.id===pair.after.id);
+            if(!present||JSON.stringify(record(present))!==JSON.stringify(record(pair.after)))throw Error("事项已变化，无法撤销本次修改");
+            updated=updated.map(t=>t.id===pair.before.id?pair.before:t);
+          }
         }
         localStorage.setItem(GOAL_KEY, JSON.stringify(value));
         replacePreviewTasks(updated);
@@ -217,9 +227,10 @@ export function useGoals(
           goals: u.goals,
           actions: u.actions,
           thoughts: u.thoughts,
+          ...(u.conversation ? {conversation:u.conversation} : {}),
           undo: null,
           proposals: s.proposals.map((p) =>
-            p.id === u.proposalId ? { ...p, status: "undone" } : p,
+            p.id === u.proposalId ? u.proposalBefore ?? { ...p, status: "undone" } : p,
           ),
         },
         undo: true,
@@ -290,6 +301,7 @@ export function useGoals(
     update,
     edit,
     apply,
+    execute: (id: string, keys: string[]) => commit((s,t,op)=>executeDelivery(s,t,id,keys,op)),
     undo,
     retry,
     recoverLatest,

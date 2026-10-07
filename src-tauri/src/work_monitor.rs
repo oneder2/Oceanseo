@@ -231,9 +231,9 @@ impl WorkMonitorStore {
                     updated_at TEXT NOT NULL
                 );
                 INSERT OR IGNORE INTO work_monitor_config VALUES (
-                    1, 1,
-                    '/home/gellar/Desktop/program/personal',
-                    '/home/gellar/Desktop/program/personal/GWorkspace',
+                    1, 0,
+                    '',
+                    '',
                     0, '09:30', 45, '[]', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 );
 
@@ -893,6 +893,9 @@ fn validate_config(config: &WorkMonitorConfig) -> Result<(), String> {
     NaiveTime::parse_from_str(&config.schedule_time, "%H:%M")
         .map_err(|_| "work_monitor_schedule_invalid")?;
     for path in [&config.workspace_root, &config.gworkspace_root] {
+        if path.is_empty() && !config.enabled {
+            continue;
+        }
         if !Path::new(path).is_absolute() {
             return Err("work_monitor_path_must_be_absolute".to_string());
         }

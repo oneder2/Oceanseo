@@ -188,7 +188,7 @@ export default function Assistant({
         result.actions.length > 6 ||
         !result.actions.every(validAction) ||
         !Array.isArray(result.reads) ||
-        result.reads.length > 4 ||
+        result.reads.length > 5 ||
         !result.reads.every((s) => isScope(s) && snapshot.scopes.includes(s))
       )
         throw Error("助手返回格式无效，没有执行任何修改。");

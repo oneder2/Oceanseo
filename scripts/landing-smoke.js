@@ -1,0 +1,60 @@
+// Run through playwright-cli run-code; checks the static-built site too.
+async (page) => {
+  const origin = new URL(page.url()).origin;
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const check = (condition, message) => { if (!condition) throw Error(message); };
+  await page.emulateMedia({ reducedMotion:'reduce' });
+  for (const width of [320,390,768,1440,1920]) {
+    await page.setViewportSize({ width, height: width < 600 ? 844 : 1000 });
+    await page.goto(origin);
+    await page.getByRole('heading', { name:'Oceanseo.', exact:true }).waitFor();
+    await page.locator('.hero-media img').evaluate(async image => { if (!image.complete) await new Promise(resolve => image.addEventListener('load', resolve, { once:true })); });
+    check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Overflow at ${width}`);
+    check(await page.locator('.hero-media img').evaluate(image => image.naturalWidth > 0), 'Hero bitmap missing');
+    await page.screenshot({ path:`output/playwright/landing-${width}.png`, animations:'disabled', fullPage:width === 1440 || width === 390 });
+  }
+  await page.getByRole('tab', { name:/02.*理清目标/ }).click();
+  await page.getByText('具体训练内容', { exact:true }).waitFor();
+  await page.getByRole('tab', { name:/02.*理清目标/ }).press('ArrowRight');
+  check(await page.getByRole('tab', { name:/03.*确认行动/ }).getAttribute('aria-selected') === 'true', 'Keyboard tab navigation');
+  await page.getByRole('button', { name:'在手机上打开', exact:true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('img', { name:'二维码：打开 Oceanseo 下载页' }).waitFor();
+  for (let i=0; i<5; i++) await page.keyboard.press('Tab');
+  check(await page.evaluate(() => !!document.activeElement.closest('dialog')), 'Focus escaped modal');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state:'hidden' });
+  check(await page.getByRole('button', { name:'在手机上打开', exact:true }).evaluate(el => el === document.activeElement), 'Modal focus not restored');
+  await page.getByRole('link', { name:'下载安装包', exact:true }).click();
+  const download = dialog.getByRole('link', { name:/确认下载/ });
+  check((await download.getAttribute('href')).endsWith('_internal.apk'), 'Wrong artifact');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name:'放大想法与目标截图', exact:true }).click();
+  await dialog.getByRole('img').waitFor();
+  await page.keyboard.press('Escape');
+  await page.getByText('核对 SHA-256 校验值', { exact:true }).first().click();
+  await page.context().grantPermissions(['clipboard-read','clipboard-write']);
+  await page.getByRole('button', { name:'复制Android校验值' }).click();
+  await page.getByText('已复制 SHA-256', { exact:true }).waitFor();
+  check((await page.evaluate(() => navigator.clipboard.readText())).length === 64, 'Invalid hash copy');
+  await page.getByText('健康端点可达', { exact:true }).waitFor();
+  await page.route('**/health', route => route.fulfill({ status:503, body:'unavailable' }));
+  await page.getByRole('button', { name:'重新检查服务' }).click();
+  await page.getByText('暂时无法连接服务', { exact:true }).waitFor();
+  await page.unroute('**/health');
+  await page.getByRole('button', { name:'重新检查服务' }).click();
+  await page.getByText('健康端点可达', { exact:true }).waitFor();
+  await page.goto(`${origin}/privacy/`);
+  await page.getByRole('heading', { name:'跨设备同步', exact:true }).waitFor();
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Privacy overflow');
+  await page.emulateMedia({ reducedMotion:'no-preference' });
+  await page.goto(origin);
+  await page.waitForFunction(() => document.documentElement.classList.contains('lenis'));
+  await page.getByRole('tab', { name:/02.*理清目标/ }).click();
+  await page.screenshot({ path:'output/playwright/landing-motion.png', fullPage:false });
+  await page.emulateMedia({ reducedMotion:'reduce' });
+  await page.waitForFunction(() => !document.documentElement.classList.contains('lenis'));
+  check(errors.length === 0, errors.join('\n'));
+  console.log('Responsive, keyboard, dialog, preview, hashes, privacy and health checks passed.');
+}

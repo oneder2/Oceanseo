@@ -2,6 +2,7 @@ import type { TaskDraft, View } from "../types";
 import { validDate } from "../life/model";
 
 export const PAGES: Record<View, string> = {
+  infrastructure: "主机与服务",
   overview: "总览",
   goals: "想法与目标",
   today: "今天",
@@ -22,6 +23,7 @@ export const SCOPES = {
   calendar: "日历安排",
   meals: "饮食与采购",
   work: "项目进度",
+  infrastructure: "主机运行摘要（不含地址与日志）",
 } as const;
 export type Scope = keyof typeof SCOPES;
 export interface Persona {
@@ -102,7 +104,7 @@ export function isAssistantState(v: unknown): v is AssistantState {
     str(p.preferences, 1200) &&
     str(s.draft, 4000) &&
     Array.isArray(s.scopes) &&
-    s.scopes.length <= 4 &&
+    s.scopes.length <= 5 &&
     s.scopes.every(isScope) &&
     new Set(s.scopes).size === s.scopes.length &&
     Array.isArray(s.messages) &&
@@ -118,7 +120,7 @@ export function isAssistantState(v: unknown): v is AssistantState {
         str(m.createdAt, 40) &&
         Number.isFinite(Date.parse(m.createdAt)) &&
         Array.isArray(m.reads) &&
-        m.reads.length <= 4 &&
+        m.reads.length <= 5 &&
         m.reads.every(isScope) &&
         Array.isArray(m.actions) &&
         m.actions.length <= 6 &&

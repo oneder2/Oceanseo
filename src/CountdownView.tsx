@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarDays, Check, Clock3, Edit3, Plus, Trash2, X } from "lucide-react";
 import DatePicker from "./DatePicker";
 import { countdownDays, countdownLabel, createCountdown, updateCountdown } from "./countdownStore";
 import { dateFromKey, dateKey } from "./dateUtils";
 import type { Countdown, CountdownDraft } from "./types";
+import { topDialog, useFocusScope } from "./useFocusScope";
+import { useLayerMotion } from "./useLayerMotion";
 
 interface CountdownViewProps {
   countdowns: Countdown[];
@@ -34,6 +36,20 @@ export default function CountdownView({ countdowns, selectedCountdownId, onChang
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<CountdownDraft>(emptyDraft);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const editorRef = useRef<HTMLElement>(null);
+  useFocusScope(editorOpen, editorRef);
+  useLayerMotion(editorOpen, editorRef);
+  useEffect(() => {
+    if (!editorOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && topDialog() === editorRef.current) {
+        event.preventDefault();
+        setEditorOpen(false);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [editorOpen]);
 
   const sortedCountdowns = useMemo(() => [...countdowns].sort((a, b) => {
     const dayDifference = Math.abs(countdownDays(a.targetDate)) - Math.abs(countdownDays(b.targetDate));
@@ -140,7 +156,7 @@ export default function CountdownView({ countdowns, selectedCountdownId, onChang
 
       {editorOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setEditorOpen(false)}>
-          <section className="modal countdown-modal" role="dialog" aria-modal="true" aria-labelledby="countdown-editor-title" onMouseDown={(event) => event.stopPropagation()}>
+          <section ref={editorRef} tabIndex={-1} className="modal countdown-modal" role="dialog" aria-modal="true" aria-labelledby="countdown-editor-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="modal-head">
               <div>
                 <span>{editingId ? "编辑关键日期" : "新的关键日期"}</span>
@@ -151,7 +167,7 @@ export default function CountdownView({ countdowns, selectedCountdownId, onChang
             <form onSubmit={save}>
               <label className="form-field">
                 <span>名称</span>
-                <input autoFocus maxLength={80} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例如：项目发布日" />
+                <input data-dialog-initial maxLength={80} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例如：项目发布日" />
               </label>
               <DatePicker label="关键日期" value={draft.targetDate} onChange={(targetDate) => setDraft({ ...draft, targetDate })} />
               <label className="form-field">

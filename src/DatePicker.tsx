@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { dateFromKey, dateKey } from "./dateUtils";
 import MonthJump from "./MonthJump";
+import { useFocusScope } from "./useFocusScope";
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -36,8 +37,9 @@ export default function DatePicker({ label, value, onChange }: DatePickerProps) 
     const initial = value ? dateFromKey(value) : new Date();
     return new Date(initial.getFullYear(), initial.getMonth(), 1);
   });
-  const [position, setPosition] = useState({ top: 0, left: 0, width: 296 });
+  const [position, setPosition] = useState({ top: 0, left: 0, width: 336, maxHeight: 600 });
   const days = useMemo(() => monthDays(month), [month]);
+  useFocusScope(open, popoverRef, '.date-picker-grid .selected, .date-picker-grid .today');
 
   useEffect(() => {
     if (!open) return;
@@ -55,6 +57,7 @@ export default function DatePicker({ label, value, onChange }: DatePickerProps) 
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        event.preventDefault();
         event.stopPropagation();
         setOpen(false);
         buttonRef.current?.focus();
@@ -73,21 +76,32 @@ export default function DatePicker({ label, value, onChange }: DatePickerProps) 
     const updatePosition = () => {
       const anchor = buttonRef.current?.getBoundingClientRect();
       if (!anchor) return;
-      const width = Math.min(310, window.innerWidth - 20);
+      const viewport = window.visualViewport;
+      const viewportLeft = viewport?.offsetLeft ?? 0;
+      const viewportTop = viewport?.offsetTop ?? 0;
+      const viewportWidth = viewport?.width ?? window.innerWidth;
+      const viewportHeight = viewport?.height ?? window.innerHeight;
+      const width = Math.min(360, viewportWidth - 8);
+      const maxHeight = Math.max(0, viewportHeight - 8);
       const height = popoverRef.current?.offsetHeight ?? 326;
-      const left = Math.min(Math.max(10, anchor.left), window.innerWidth - width - 10);
-      const fitsBelow = window.innerHeight - anchor.bottom >= height + 8;
-      const top = fitsBelow
+      const left = Math.min(Math.max(viewportLeft + 4, anchor.left), viewportLeft + viewportWidth - width - 4);
+      const fitsBelow = viewportTop + viewportHeight - anchor.bottom >= height + 8;
+      const preferredTop = fitsBelow
         ? anchor.bottom + 6
-        : Math.max(10, anchor.top - height - 6);
-      setPosition({ top, left, width });
+        : anchor.top - height - 6;
+      const top = Math.max(viewportTop + 4, Math.min(preferredTop, viewportTop + viewportHeight - Math.min(height, maxHeight) - 4));
+      setPosition({ top, left, width, maxHeight });
     };
     updatePosition();
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
+    window.visualViewport?.addEventListener("resize", updatePosition);
+    window.visualViewport?.addEventListener("scroll", updatePosition);
     return () => {
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
+      window.visualViewport?.removeEventListener("resize", updatePosition);
+      window.visualViewport?.removeEventListener("scroll", updatePosition);
     };
   }, [open, month]);
 
@@ -128,7 +142,8 @@ export default function DatePicker({ label, value, onChange }: DatePickerProps) 
           role="dialog"
           aria-modal="false"
           aria-label={`${label}选择器`}
-          style={{ top: position.top, left: position.left, width: position.width }}
+          tabIndex={-1}
+          style={position}
         >
           <header className="date-picker-head">
             <MonthJump value={month} onChange={setMonth} />

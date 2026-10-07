@@ -1,0 +1,50 @@
+.sync-settings { margin: 24px; padding: 20px; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); background: #f4f6f0; }
+.sync-heading { display: flex; align-items: center; gap: 12px; color: #285f50; }
+.sync-heading > div { flex: 1; }
+.sync-heading strong { font-size: 18px; }
+.sync-heading p { margin: 4px 0; font-size: 13px; }
+.sync-heading > span { font-size: 12px; padding: 4px 8px; border-radius: 6px; background: #dbe8dc; }
+.sync-status { margin: 18px 0; padding: 12px 14px; border-left: 3px solid #708b78; background: #e8eee7; }
+.sync-status strong { font-size: 15px; }
+.sync-status p, .sync-plan p { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.sync-scope, .sync-hint { color: #52664f; font-size: 13px; line-height: 1.7; }
+.sync-settings form { display: grid; gap: 14px; margin: 18px 0; }
+.sync-settings form > label { display: grid; gap: 8px; font-size: 14px; }
+.sync-settings form input { width: 100%; min-width: 0; min-height: 44px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: white; font: inherit; }
+.sync-settings button { min-height: 44px; white-space: normal; line-height: 1.5; }
+.sync-settings form button { justify-self: start; }
+.sync-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.sync-actions small { font-size: 12px; color: #52664f; }
+.sync-plan { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.sync-plan h3 { font-size: 16px; margin: 0 0 12px; }
+.sync-counts { display: flex; flex-wrap: wrap; gap: 16px; color: #285f50; font-size: 14px; font-variant-numeric: tabular-nums; }
+.sync-counts span { display: flex; gap: 6px; align-items: center; }
+.sync-conflict { min-width: 0; margin: 18px 0; padding: 12px; border: 1px solid #b98f6380; border-radius: 10px; }
+.sync-conflict legend { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.sync-versions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.sync-versions > div { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.sync-versions > .is-selected { border-color: #708b78; background: #e8eee7; }
+.sync-versions label { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.sync-versions input { width: 20px; height: 20px; flex: 0 0 20px; accent-color: #285f50; }
+.sync-version { font-size: 14px; overflow-wrap: anywhere; }
+.sync-version ul { padding-left: 18px; }
+.sync-version .sync-note { white-space: pre-wrap; max-height: 200px; overflow: auto; }
+.sync-version summary { min-height: 44px; padding-block: 10px; cursor: pointer; }
+.sync-version pre { max-height: 240px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+.sync-deleted, .sync-error { color: #9f4035; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.sync-working { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: #f4f6f0e8; padding: 24px; color: #285f50; text-align: center; }
+.sync-working p { font-size: 16px; }
+.sync-change-list { margin-top: 14px; font-size: 14px; }
+.sync-change-list summary { min-height: 44px; padding: 12px 0; cursor: pointer; }
+.sync-change-list ul { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow: auto; }
+.sync-change-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; border-bottom: 1px solid var(--line); padding: 10px 0; overflow-wrap: anywhere; }
+.sync-change-list span { font-size: 13px; }
+@media (max-width: 600px) { .sync-versions { grid-template-columns: minmax(0,1fr); } .sync-settings { margin: 20px 16px; padding: 16px; } }
+.sync-automatic { border-block: 1px solid var(--line); margin: 16px 0; padding: 12px 0; }
+.sync-auto-toggle { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; font-size: 15px; font-weight: 600; }
+.sync-auto-toggle input { flex: 0 0 22px; width: 22px; height: 22px; accent-color: var(--sea, #285f50); cursor: pointer; }
+.sync-auto-status { margin-top: 6px; padding-left: 12px; border-left: 3px solid #448779; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.sync-auto-status.is-paused, .sync-auto-status.is-retry { border-color: #aa644c; }
+.sync-auto-status p { margin: 4px 0; }
+.sync-automatic > button { margin-top: 10px; }
+.sync-status-button { color: #934b38; flex-shrink: 0; width: 44px; height: 44px; }

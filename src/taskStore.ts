@@ -1,3 +1,4 @@
+import { profileLocalStorage as localStorage } from "./profileStorage";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { Horizon, Priority, Task, TaskDraft, TaskOrigin } from "./types";
 

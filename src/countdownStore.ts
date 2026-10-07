@@ -1,3 +1,4 @@
+import { profileLocalStorage as localStorage } from "./profileStorage";
 import { dateFromKey, dateKey } from "./dateUtils";
 import type { Countdown, CountdownDraft } from "./types";
 

@@ -1,3 +1,4 @@
+import { profileLocalStorage as localStorage } from "../profileStorage";
 import { useEffect, useRef, useState } from "react";
 import {
   APP_STATE_KEYS,

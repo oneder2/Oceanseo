@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { isPattern, validSize, type BeadPattern } from "./model";
 import type { ConvertOptions } from "./convert";
+import { useBeadImageAi } from "./useBeadImageAi";
 
-interface Source {
+export interface ImageSource {
   image: ImageBitmap;
   url: string;
   name: string;
@@ -11,17 +12,20 @@ export function useImageImport(
   onResult: (p: BeadPattern) => void,
   notify: (message: string) => void,
 ) {
-  const [source, setSource] = useState<Source | null>(null);
+  const [source, setSource] = useState<ImageSource | null>(null);
   const [busy, setBusy] = useState(false);
   const [options, setOptions] = useState<ConvertOptions>({
     width: 48,
     height: 48,
     mode: "photo",
     colors: 16,
-    cleanup: 1,
+    cleanup: 2,
+    boundaryCleanup: true,
     brand: "MARD",
   });
   const [lockRatio, setLockRatio] = useState(true);
+  const ai = useBeadImageAi(source, options);
+  const activeSource = ai.usePrepared && ai.prepared ? ai.prepared : source;
   const sourceRef = useRef(source),
     worker = useRef<Worker | null>(null),
     token = useRef(0);
@@ -88,13 +92,15 @@ export function useImageImport(
   function dimension(key: "width" | "height", value: number) {
     setOptions((o) => {
       const next = { ...o, [key]: value };
-      if (source && lockRatio && validSize(value)) {
+      if (activeSource && lockRatio && validSize(value)) {
         if (key === "width")
           next.height = Math.max(
             1,
             Math.min(
               160,
-              Math.round((value * source.image.height) / source.image.width),
+              Math.round(
+                (value * activeSource.image.height) / activeSource.image.width,
+              ),
             ),
           );
         else
@@ -102,7 +108,9 @@ export function useImageImport(
             1,
             Math.min(
               160,
-              Math.round((value * source.image.width) / source.image.height),
+              Math.round(
+                (value * activeSource.image.width) / activeSource.image.height,
+              ),
             ),
           );
       }
@@ -110,9 +118,11 @@ export function useImageImport(
     });
   }
   function convert() {
+    const source = activeSource;
     if (
       !source ||
       busy ||
+      ai.busy ||
       !validSize(options.width) ||
       !validSize(options.height)
     )
@@ -170,7 +180,9 @@ export function useImageImport(
   }
   return {
     source,
-    busy,
+    activeSource,
+    ai,
+    busy: busy || ai.busy,
     options,
     setOptions,
     lockRatio,
@@ -179,6 +191,10 @@ export function useImageImport(
     dimension,
     convert,
     cancel: () => {
+      if (ai.busy) {
+        ai.cancel();
+        return;
+      }
       cancel();
       notify("已取消图片处理");
     },

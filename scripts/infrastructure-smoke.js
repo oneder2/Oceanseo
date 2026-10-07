@@ -1,0 +1,77 @@
+// Isolated browser context only. Does not connect to real hosts or AI services.
+async (page) => {
+  const check=(v,m)=>{if(!v)throw Error(m);},errors=[];page.on("pageerror",e=>errors.push(e.message));
+  if(new URL(page.url()).origin!=="http://127.0.0.1:1437")throw Error("Use isolated port 1437 only");
+  await page.evaluate(()=>localStorage.clear());await page.reload();
+  await page.setViewportSize({width:1280,height:900});
+  let dialog=page.getByRole("dialog");
+  if(!await dialog.count()){await page.getByRole("button",{name:"主机与服务",exact:true}).click();await page.getByRole("button",{name:"添加主机",exact:true}).click();}
+  await dialog.getByLabel("主机名称 *",{exact:true}).fill("验收 · Dallas 同步");
+  await dialog.getByLabel("供应商",{exact:true}).fill("ServerCheap");
+  await dialog.getByLabel("地区 / 机房",{exact:true}).fill("Dallas, TX");
+  await dialog.getByLabel("用途",{exact:true}).fill("潮汐同步内测");
+  await dialog.getByLabel("所属项目（可自定义）",{exact:true}).fill("Oceanseo");
+  await dialog.getByRole("button",{name:"服务",exact:true}).click();
+  await dialog.getByRole("button",{name:"添加服务",exact:true}).click();
+  await dialog.getByLabel("服务名称 *",{exact:true}).fill("潮汐同步 API");
+  await dialog.getByLabel("访问地址",{exact:true}).fill("https://sync.example.com");
+  await dialog.getByRole("button",{name:"费用与期限",exact:true}).click();
+  await dialog.getByLabel("每期续费金额（不含税）",{exact:true}).fill("9");
+  await dialog.getByLabel("账期（月）",{exact:true}).fill("3");
+  await dialog.getByRole("button",{name:"下次续费日期：选择日期",exact:true}).click();
+  await page.getByRole("dialog",{name:"下次续费日期选择器",exact:true}).getByRole("button",{name:"今天",exact:true}).click();
+  await dialog.getByRole("button",{name:"保存档案",exact:true}).click();
+  await dialog.getByText("档案已保存",{exact:true}).waitFor();
+  await dialog.getByRole("button",{name:"关闭详情",exact:true}).click();
+  await page.reload();
+  await page.getByRole("button",{name:"主机与服务",exact:true}).click();
+  await page.locator(".infra-host").filter({hasText:"验收 · Dallas 同步"}).waitFor();
+  check(await page.getByText("USD 3",{exact:false}).count()>0,"Monthly cost incorrect");
+  await page.getByRole("button",{name:"计划日历",exact:true}).click();
+  await page.locator(".calendar-event.event-host").filter({hasText:"验收 · Dallas 同步"}).first().click();
+  await page.getByRole("dialog",{name:"验收 · Dallas 同步",exact:true}).waitFor();
+  await dialog.getByRole("button",{name:"费用与期限",exact:true}).click();
+  await dialog.getByRole("button",{name:"加入任务",exact:true}).click();
+  const editor=page.getByRole("dialog").filter({has:page.getByRole("textbox",{name:"计划名称",exact:true})});
+  await editor.waitFor();
+  check((await editor.getByRole("textbox",{name:"计划名称",exact:true}).inputValue()).includes("续费"),"Draft missing host title");
+  await editor.getByRole("button",{name:"保存计划",exact:true}).click();await editor.waitFor({state:"hidden"});
+  const count=await page.evaluate(()=>JSON.parse(localStorage.getItem("tideplan.tasks.v1")).length);
+  await page.getByRole("region",{name:"主机待处理",exact:true}).getByRole("button",{name:"查看关联任务",exact:true}).click();
+  await page.getByRole("dialog").getByRole("button",{name:"关闭",exact:true}).click();
+  check(await page.evaluate(()=>JSON.parse(localStorage.getItem("tideplan.tasks.v1")).length)===count,"Duplicate task created");
+  await page.locator(".infra-host").first().click();
+  await dialog.getByLabel("主机名称 *",{exact:true}).fill("未保存的修改");
+  await dialog.getByRole("button",{name:"关闭详情",exact:true}).click();
+  await dialog.getByRole("button",{name:"继续编辑",exact:true}).click();
+  await dialog.getByRole("button",{name:"关闭详情",exact:true}).click();
+  await dialog.getByRole("button",{name:"放弃修改并关闭",exact:true}).click();
+  await page.locator(".infra-host").first().click();
+  check(await dialog.getByLabel("主机名称 *",{exact:true}).inputValue()==="验收 · Dallas 同步","Discard corrupted saved name");
+  await dialog.getByRole("button",{name:"费用与期限",exact:true}).click();
+  await dialog.getByRole("button",{name:"记录本期已付款",exact:true}).click();
+  await dialog.getByRole("button",{name:"确认登记付款",exact:true}).click();
+  await dialog.getByText("付款记录（1）",{exact:true}).waitFor();
+  await dialog.getByRole("button",{name:"维护",exact:true}).click();
+  await dialog.getByLabel("备份方式 / 周期 / 保留策略",{exact:true}).fill("每日备份，异地保留 7 份");
+  await dialog.getByRole("button",{name:"保存档案",exact:true}).click();
+  await dialog.getByText("档案已保存",{exact:true}).waitFor();
+  for(const width of [960,390,320]){
+    await page.setViewportSize({width,height:844});
+    check(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),`Drawer overflow at ${width}`);
+    await dialog.getByRole("button",{name:"监测",exact:true}).click();
+    check(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1),`Monitor overflow at ${width}`);
+  }
+  await page.screenshot({path:"output/playwright/infrastructure-drawer-320.png"});
+  await dialog.getByRole("button",{name:"关闭详情",exact:true}).click();
+  await page.setViewportSize({width:1280,height:900});
+  await page.screenshot({path:"output/playwright/infrastructure-dashboard.png"});
+  await page.getByRole("button",{name:"AI 与周摘要",exact:true}).click();
+  check(await page.getByRole("button",{name:"生成 AI 周摘要",exact:true}).isDisabled(),"AI consent not required");
+  await page.getByRole("button",{name:"识别订单",exact:true}).click();
+  await page.getByLabel("订单文本",{exact:true}).fill("4 GB RAM, 2 vCPU, quarterly $9");
+  check(await page.getByRole("button",{name:"识别并打开档案草稿",exact:true}).isDisabled(),"Order sent without consent");
+  await page.getByRole("button",{name:"关闭主机 AI 与周摘要",exact:true}).click();
+  check(errors.length===0,errors.join("\n"));
+  console.log("PASS: host CRUD, persistence, calendar, task dedup, billing, unsaved guard, responsive and consent");
+}

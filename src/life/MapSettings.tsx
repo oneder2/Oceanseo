@@ -7,6 +7,7 @@ import {
   type MapSettings as Summary,
 } from "./maps";
 import { errorText } from "./agent";
+import { platform } from "../platform";
 export default function MapSettings() {
   const [summary, setSummary] = useState<Summary>({
       configured: false,
@@ -71,7 +72,7 @@ export default function MapSettings() {
           />
         </label>
         <p>
-          Key 保存在本机受限权限文件，不会发送给
+          {platform.mobile ? "Key 经 Android 安全存储加密后保存在本机" : "Key 保存在本机受限权限文件"}，不会发送给
           AI，也不进入数据备份。地图查询会把地点发送给高德；路线和价格需在出发前核实。
         </p>
         <div className="life-actions">

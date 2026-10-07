@@ -8,8 +8,9 @@ use std::{collections::HashMap, sync::Mutex, time::Duration};
 use tauri::Emitter;
 use tokio::sync::oneshot;
 
-const SCOPES: [&str; 4] = ["tasks", "calendar", "meals", "work"];
-const PAGES: [&str; 14] = [
+const SCOPES: [&str; 5] = ["tasks", "calendar", "meals", "work", "infrastructure"];
+const PAGES: [&str; 15] = [
+    "infrastructure",
     "overview",
     "goals",
     "today",
@@ -94,7 +95,7 @@ pub fn valid_state(v: &Value) -> bool {
         && valid_persona(&v["persona"])
         && text(&v["draft"], 4000)
         && v["scopes"].as_array().is_some_and(|a| {
-            a.len() <= 4
+            a.len() <= 5
                 && a.iter().all(|s| choice(s, &SCOPES))
                 && a.iter().collect::<std::collections::HashSet<_>>().len() == a.len()
         })
@@ -116,7 +117,7 @@ pub fn valid_state(v: &Value) -> bool {
                             .is_some_and(|s| chrono::DateTime::parse_from_rfc3339(s).is_ok())
                         && m["reads"]
                             .as_array()
-                            .is_some_and(|a| a.len() <= 4 && a.iter().all(|s| choice(s, &SCOPES)))
+                            .is_some_and(|a| a.len() <= 5 && a.iter().all(|s| choice(s, &SCOPES)))
                         && m["actions"].as_array().is_some_and(|a| {
                             a.len() <= 6
                                 && a.iter()
@@ -143,7 +144,7 @@ fn valid_request(r: &AgentRequest) -> bool {
             .all(|m| choice(&m["role"], &["user", "assistant"]) && text(&m["content"], 14000))
         && r.context["sections"]
             .as_object()
-            .is_some_and(|s| s.len() <= 4 && s.keys().all(|k| SCOPES.contains(&k.as_str())))
+            .is_some_and(|s| s.len() <= 5 && s.keys().all(|k| SCOPES.contains(&k.as_str())))
         && date(&r.context["today"])
         && r.context["today"] != ""
         && text(&r.context["timeZone"], 100)

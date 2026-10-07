@@ -1,0 +1,107 @@
+/* Phone shell: quiet sea-glass navigation, paper content, one conversation.
+   Native insets are applied by MainActivity; browser safe areas remain a fallback. */
+.mobile-shell {
+  width: 100%; height: 100%; margin: 0; border: 0; border-radius: 0;
+  box-shadow: none; background: var(--paper);
+  display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.mobile-shell .titlebar { height: 48px; flex: 0 0 48px; padding: 0 10px 0 16px; gap: 8px; }
+.mobile-shell .titlebar-menu { display: none; }
+.mobile-shell .titlebar-brand { margin: 0 auto 0 0; flex-shrink: 0; }
+.mobile-settings { border: 0; background: transparent; display: grid; place-items: center; width: 44px; height: 44px; color: #496757; }
+.mobile-shell .save-status { display: flex; flex-wrap: wrap; margin: 0; font-size: 10px; max-width: 46%; }
+.mobile-shell .save-status-saved { display: none; }
+.mobile-shell .app-layout { display: block; flex: 1; min-height: 0; height: auto; }
+.mobile-shell .workspace { height: 100%; padding: 20px 16px 28px; scrollbar-width: none; }
+.mobile-shell .workspace::-webkit-scrollbar { display: none; }
+.mobile-shell .workspace.workspace-conversation { padding: 0; }
+.mobile-shell .workspace-conversation > .workspace-head { display: none; }
+.mobile-shell .workspace-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.mobile-shell .workspace-head > * { min-width: 0; }
+.mobile-shell .head-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; min-width: 0; }
+.mobile-shell .search-field, .mobile-shell .search-field input { min-width: 0; width: 100%; }
+.mobile-shell .head-actions .primary-button { white-space: nowrap; min-height: 44px; }
+.mobile-shell .sidebar {
+  width: min(310px, 88%); position: absolute; z-index: 12; top: 48px; bottom: 64px; left: 0;
+  transform: translateX(-105%); box-shadow: 12px 0 32px #293e3724; padding: 20px 16px 10px;
+}
+.mobile-shell .sidebar.is-open { transform: translateX(0); }
+.mobile-shell .sidebar-scrim { display: block; position: absolute; z-index: 11; inset: 48px 0 64px; border: 0; background: #293e3740; }
+.mobile-shell .sidebar .progress-panel { display: none; }
+.mobile-shell .main-nav button { min-height: 44px; }
+.mobile-nav { height: 64px; flex: 0 0 64px; display: flex; border-top: 1px solid var(--line); background: #e8eee7; }
+.mobile-nav button { flex: 1; border: 0; background: none; color: #6c7f74; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 12px; position: relative; }
+.mobile-nav button[aria-current="page"] { color: #285f50; background: #dbe8dc; }
+.mobile-nav button[aria-current="page"]::before { content: ""; position: absolute; top: 0; height: 3px; width: 28px; border-radius: 0 0 3px 3px; background: #708b78; }
+.mobile-shell .modal-backdrop { padding: 8px; }
+.mobile-shell .modal { max-height: 100%; border-radius: 16px; }
+.mobile-shell .icon-button, .mobile-shell .check-button, .mobile-shell .task-notebook-button { min-width: 44px; min-height: 44px; }
+.mobile-shell .task-card { grid-template-columns: 44px minmax(0, 1fr) 60px; padding: 10px 8px; }
+.mobile-shell input, .mobile-shell textarea, .mobile-shell select { font-size: 16px; }
+.mobile-shell .gc-header { padding: 12px 16px; gap: 8px; }
+.mobile-shell .gc-tools { gap: 2px; }
+.mobile-shell .gc-icon { min-width: 44px; min-height: 44px; }
+.mobile-shell .gc-thread { padding: 20px 16px 12px; }
+.mobile-shell .gc-welcome { margin-top: 24px; }
+.mobile-shell .gc-identity h1 { font-size: 18px; }
+.mobile-shell .gc-identity p { display: none; }
+.mobile-shell .gc-starters { margin-top: 16px; }
+.mobile-shell .toast { bottom: 76px; }
+.mobile-platform-note { margin: 16px 24px; padding: 12px 14px; border-radius: 10px; background: #edf1e8; color: #52664f; font-size: 13px; line-height: 1.7; }
+.mobile-reminder-panel { margin: 0 24px 24px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: #edf1e8; color: #496757; }
+.mobile-reminder-panel header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.mobile-reminder-panel header strong { font-size: 15px; }
+.mobile-reminder-panel button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px; border: 1px solid #708b7838; border-radius: 8px; background: var(--paper); color: #285f50; font-size: 13px; }
+.mobile-reminder-panel button:disabled { opacity: .55; }
+.mobile-reminder-panel dl { margin: 12px 0; font-size: 14px; }
+.mobile-reminder-panel dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.mobile-reminder-panel dd { margin: 0; font-weight: 600; }
+.mobile-reminder-schedule { font-size: 13px; overflow-wrap: anywhere; }
+.mobile-reminder-schedule ul { padding: 0; margin: 12px 0; list-style: none; }
+.mobile-reminder-schedule li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 12px; margin: 8px 0; padding-left: 10px; border-left: 3px solid #708b78; }
+.mobile-reminder-schedule time { font-size: 15px; font-variant-numeric: tabular-nums; }
+.mobile-reminder-schedule small { font-size: 12px; }
+.mobile-reminder-help, .purchase-export-hint { font-size: 13px; line-height: 1.7; color: #52664f; }
+.mobile-reminder-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.mobile-shell .purchase-toolbar { align-items: stretch; gap: 12px; }
+.mobile-shell .purchase-tools { flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+.mobile-shell .purchase-source-filter { display: flex; flex-wrap: wrap; }
+.mobile-shell .purchase-source-filter button { min-height: 44px; padding-inline: 12px; font-size: 14px; }
+.mobile-shell .purchase-tools button, .mobile-shell .purchase-tools select { min-height: 44px; }
+.mobile-shell .purchase-export-select select { width: 100%; }
+.mobile-shell .purchase-row:not(.purchase-edit-row) { grid-template-columns: 3px 44px minmax(0, 1fr) auto; gap: 8px; padding: 10px 0; }
+.mobile-shell .purchase-row:not(.purchase-edit-row) .purchase-source-rail { grid-row: 1 / 3; height: 100%; }
+.mobile-shell .purchase-check-button { width: 44px; height: 44px; grid-row: 1 / 3; }
+.mobile-shell .purchase-item-copy strong { font-size: 16px; white-space: normal; overflow-wrap: anywhere; }
+.mobile-shell .purchase-item-copy span { font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.mobile-shell .purchase-amount { grid-column: 3; grid-row: 2; white-space: normal; overflow-wrap: anywhere; font-size: 14px; }
+.mobile-shell .purchase-row-actions { grid-column: 4; grid-row: 1 / 3; flex-direction: column; }
+.mobile-shell .purchase-row-actions button { width: 44px; height: 44px; }
+.mobile-shell .purchase-derived-state { grid-column: 4; grid-row: 1 / 3; writing-mode: vertical-rl; font-size: 12px; }
+.mobile-shell .purchase-edit-row { grid-template-columns: minmax(0, 1fr) 44px; padding: 12px; }
+.mobile-shell .purchase-edit-row > input { grid-column: 1; height: 44px; }
+.mobile-shell .purchase-edit-row .purchase-source-rail { display: none; }
+.mobile-shell .purchase-edit-row .purchase-row-actions { grid-column: 2; grid-row: 1 / 4; }
+.mobile-shell .purchase-empty span { font-size: 14px; line-height: 1.7; }
+.mobile-shell .reminder-times { flex-wrap: wrap; }
+.mobile-shell .reminder-times input { min-width: 0; min-height: 44px; width: 100%; }
+.mobile-shell .test-notification { min-height: 44px; }
+@media (max-height: 520px) {
+  .mobile-nav { height: 48px; flex-basis: 48px; }
+  .mobile-nav button { flex-direction: row; gap: 8px; }
+  .mobile-shell .sidebar { bottom: 48px; }
+  .mobile-shell .sidebar-scrim { bottom: 48px; }
+  .mobile-shell .gc-identity .tide-sprite { display: none; }
+  .mobile-shell .gc-header { padding-block: 4px; }
+  /* Short native viewports include landscape and the space above the IME. */
+  .mobile-shell:has(.workspace-conversation) .titlebar { display: none; }
+  .mobile-shell:has(.workspace-conversation) .sidebar { top: 0; }
+  .mobile-shell:has(.workspace-conversation) .sidebar-scrim { top: 0; }
+  .mobile-shell .gc-delivery-trigger > span { display: none; }
+  .mobile-shell .gc-compose-area { padding: 4px 12px 8px; }
+  .mobile-shell .gc-composer { padding: 6px 10px; }
+  .mobile-shell .gc-composer textarea { min-height: 44px; max-height: 72px; overflow-y: auto; }
+  .mobile-shell .gc-composer-hint { display: none; }
+  .mobile-shell .gc-thread { padding-block: 8px; }
+}
