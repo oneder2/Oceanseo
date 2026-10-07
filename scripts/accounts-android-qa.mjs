@@ -186,6 +186,11 @@ try {
   const encrypted = await adb("shell", "run-as", pkg, "cat", `profiles/${bob.key}/account-session.json`);
   assert.ok(encrypted.startsWith("tideplan-keystore-v1:"), "Session not encrypted with Android Keystore");
   assert.ok(!encrypted.includes(password) && !encrypted.includes(endpoint), "Raw account fields leaked to disk");
+  await invoke("delete_account", { password, confirmation: "DELETE" });
+  assert.equal((await invoke("get_profile_status")).current.signedIn, false, "Account deletion did not clear local session");
+  const deletedBob = await fetch(`${endpoint}/v2/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "bob", password, deviceName: "deleted Android", platform: "android" }) });
+  assert.equal(deletedBob.status, 401, "Deleted account session remained valid");
+  assert.deepEqual(await invoke("list_tasks"), [bobTask], "Account deletion removed the local offline copy");
   await settings(); await signIn("alice"); await switchConfirmed(alice.key);
   assert.deepEqual(await invoke("list_tasks"), aliceTasks);
   assert.deepEqual(await invoke("get_ai_settings"), aliceAi);
@@ -208,7 +213,7 @@ try {
   assert.deepEqual(await invoke("list_tasks"), originalTasks);
   assert.deepEqual(await invoke("get_ai_settings"), originalAi);
   evidence.gates.push({ gate: "android-account-ui-storage-session-and-v2-sync", aliceId: aliceTask.id, bobId: bobTask.id,
-    noImplicitImport: true, encryptedSession: true, aliceBobAlice: true, isolatedAiAndDrafts: true, reminderOwnerSwitched: true, revokeOthers: true, logoutOfflineColdStart: true, originalLocalPreserved: true });
+    noImplicitImport: true, encryptedSession: true, aliceBobAlice: true, isolatedAiAndDrafts: true, reminderOwnerSwitched: true, revokeOthers: true, logoutOfflineColdStart: true, originalLocalPreserved: true, accountDeletionRevokesCloudSession: true, accountDeletionKeepsOfflineCopy: true });
   await mkdir("output/playwright", { recursive: true });
   await writeFile(`output/playwright/accounts-android-${physicalDevice ? "pixel" : "emulator"}${automatic ? "-automatic" : ""}-evidence.json`, JSON.stringify(evidence, null, 2));
   console.log(JSON.stringify({ passed: true, actualAndroid: true, actualHttp: true, gates: evidence.gates.length }));
