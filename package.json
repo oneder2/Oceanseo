@@ -12,6 +12,7 @@
     "test:sync-server": "cd services/sync && python3 -m unittest -v test_server",
     "test:accounts-server": "python3 -m unittest -v services.accounts.test_server services.accounts.test_deployment",
     "test:backup-audit": "python3 -m unittest -v services.deployment.test_backup_audit",
+    "test:backup-alert": "python3 -m unittest -v services.deployment.test_backup_alert",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

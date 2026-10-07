@@ -18,6 +18,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:backup-audit
+      - run: npm run test:backup-alert
       - run: npm run test:sync-server
       - run: npm run test:accounts-server
       - run: npm run build

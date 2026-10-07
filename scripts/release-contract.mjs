@@ -9,6 +9,9 @@ const files = {
   android: ".github/workflows/android.yml",
   androidRelease: ".github/workflows/android-release.yml",
   backupAudit: "services/deployment/backup-audit.py",
+  backupAlert: "services/deployment/backup-alert.py",
+  backupAlertUnit: "services/deployment/oceanseo-backup-alert@.service",
+  deployServices: "services/deployment/deploy-services.sh",
   syncAuditUnit: "services/deployment/tideplan-backup-audit.service",
   accountsAuditUnit: "services/deployment/oceanseo-accounts-backup-audit.service",
   syncAuditTimer: "services/deployment/tideplan-backup-audit.timer",
@@ -35,8 +38,25 @@ assert.match(source.androidRelease, /apksigner/);
 assert.doesNotMatch(source.ci, /TIDEPLAN_KEYSTORE_PASSWORD/);
 assert.match(source.backupAudit, /PRAGMA integrity_check/);
 assert.match(source.backupAudit, /max-age-hours/);
+assert.match(source.backupAlert, /OCEANSEO_ALERT_WEBHOOK_URL/);
+assert.match(source.backupAlert, /backup_audit_failed/);
+assert.match(source.backupAlert, /must be an HTTPS URL/);
+assert.match(source.backupAlertUnit, /ConditionPathExists=\/etc\/oceanseo-alert\.env/);
+assert.match(source.backupAlertUnit, /DynamicUser=true/);
 assert.match(source.syncAuditUnit, /\/opt\/tideplan-sync\/backup-audit.py/);
 assert.match(source.accountsAuditUnit, /\/opt\/oceanseo-accounts\/services\/deployment\/backup-audit.py/);
+assert.match(source.syncAuditUnit, /OnFailure=oceanseo-backup-alert@sync\.service/);
+assert.match(source.accountsAuditUnit, /OnFailure=oceanseo-backup-alert@accounts\.service/);
+assert.ok(
+  source.deployServices.indexOf("wait_for curl --fail --silent --show-error --max-time 2 http:\/\/127.0.0.1:4791\/v2\/health") <
+    source.deployServices.indexOf(
+      "start_audit tideplan-backup-audit.service",
+      source.deployServices.indexOf("sudo systemctl enable tideplan-backup-audit.timer"),
+    ),
+  "deployment must wait for service health before starting backup audits",
+);
+assert.match(source.deployServices, /start_audit\(\) \{/);
+assert.match(source.deployServices, /systemctl reset-failed "\$unit"/);
 assert.match(source.syncAuditTimer, /Persistent=true/);
 assert.match(source.accountsAuditTimer, /Persistent=true/);
 assert.match(source.syncServer, /backup_status/);
@@ -49,6 +69,7 @@ assert.match(source.accountsApi, /route == "\/v2\/account"/);
 assert.match(source.accountsApi, /self\.command == "DELETE"/);
 assert.match(source.ci, /npm run test:sync-server/);
 assert.match(source.ci, /npm run test:accounts-server/);
+assert.match(source.ci, /npm run test:backup-alert/);
 assert.match(source.androidRelease, /android-release-verify\.mjs/);
 assert.match(source.androidReleaseVerify, /com\.tideplan\.mobile/);
 assert.match(source.androidReleaseVerify, /jarsigner/);
@@ -64,6 +85,7 @@ const report = {
     checks: ["private mode", "sqlite integrity", "required schema"],
     timers: ["sync", "accounts"],
   },
+  backupAlert: { provider: "generic HTTPS webhook", enabledByDefault: false },
   generatedAt: new Date().toISOString(),
 };
 await mkdir("output/playwright", { recursive: true });

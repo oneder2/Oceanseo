@@ -47,7 +47,7 @@ rollback() {
 trap rollback EXIT
 trap 'exit 1' HUP INT TERM
 useradd --system --user-group --home-dir /var/lib/oceanseo-accounts --shell /usr/sbin/nologin oceanseo-accounts
-install -d -m 755 /opt/oceanseo-accounts/services/accounts /opt/oceanseo-accounts/services/sync /opt/oceanseo-accounts/services/deployment
+install -d -m 755 /opt/oceanseo-accounts/services/accounts /opt/oceanseo-accounts/services/sync /opt/oceanseo-accounts/services/deployment /opt/oceanseo-alert
 install -d -o oceanseo-accounts -g oceanseo-accounts -m 700 /var/lib/oceanseo-accounts /var/backups/oceanseo-accounts
 for module in __init__.py security.py store.py server.py admin.py; do
     install -m 644 "$deployment_source/accounts/$module" "/opt/oceanseo-accounts/services/accounts/$module"
@@ -57,6 +57,7 @@ for module in server.py backup.py; do
 done
 install -m 755 "$deployment_source/deployment/accounts-backup-daily.sh" /opt/oceanseo-accounts/services/deployment/accounts-backup-daily.sh
 install -m 755 "$deployment_source/deployment/backup-audit.py" /opt/oceanseo-accounts/services/deployment/backup-audit.py
+install -m 755 "$deployment_source/deployment/backup-alert.py" /opt/oceanseo-alert/backup-alert.py
 install -m 644 "$deployment_source/deployment/verify-accounts.py" /opt/oceanseo-accounts/services/deployment/verify-accounts.py
 install -o root -g root -m 600 "$deployment_source/accounts/accounts.env.example" /etc/oceanseo-accounts.env
 install -m 644 "$deployment_source/accounts/oceanseo-accounts.service" /etc/systemd/system/oceanseo-accounts.service
@@ -64,6 +65,7 @@ install -m 644 "$deployment_source/deployment/oceanseo-accounts-backup.service" 
 install -m 644 "$deployment_source/deployment/oceanseo-accounts-backup.timer" /etc/systemd/system/oceanseo-accounts-backup.timer
 install -m 644 "$deployment_source/deployment/oceanseo-accounts-backup-audit.service" /etc/systemd/system/oceanseo-accounts-backup-audit.service
 install -m 644 "$deployment_source/deployment/oceanseo-accounts-backup-audit.timer" /etc/systemd/system/oceanseo-accounts-backup-audit.timer
+install -m 644 "$deployment_source/deployment/oceanseo-backup-alert@.service" /etc/systemd/system/oceanseo-backup-alert@.service
 units_installed=true
 systemctl daemon-reload
 systemctl enable --now oceanseo-accounts.service

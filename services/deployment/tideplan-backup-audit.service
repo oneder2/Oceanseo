@@ -1,6 +1,7 @@
 [Unit]
 Description=Audit Tideplan private sync database backup
 After=tideplan-sync-backup.service
+OnFailure=oceanseo-backup-alert@sync.service
 
 [Service]
 Type=oneshot

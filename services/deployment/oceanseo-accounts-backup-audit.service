@@ -1,6 +1,7 @@
 [Unit]
 Description=Audit Oceanseo private account database backup
 After=oceanseo-accounts-backup.service
+OnFailure=oceanseo-backup-alert@accounts.service
 
 [Service]
 Type=oneshot

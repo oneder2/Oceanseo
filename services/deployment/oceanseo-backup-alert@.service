@@ -1,0 +1,16 @@
+[Unit]
+Description=Send redacted Oceanseo backup audit alert for %i
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/oceanseo-alert.env
+
+[Service]
+Type=oneshot
+DynamicUser=true
+EnvironmentFile=/etc/oceanseo-alert.env
+ExecStart=/usr/bin/python3 /opt/oceanseo-alert/backup-alert.py %i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077

@@ -15,12 +15,13 @@ caddy validate --config "$deployment_source/deployment/Caddyfile" --adapter cadd
 if ! getent passwd tideplan-sync >/dev/null; then
     useradd --system --user-group --home-dir /var/lib/tideplan-sync --shell /usr/sbin/nologin tideplan-sync
 fi
-install -d -m 755 /opt/tideplan-sync /opt/tideplan-monitor
+install -d -m 755 /opt/tideplan-sync /opt/tideplan-monitor /opt/oceanseo-alert
 install -d -o tideplan-sync -g tideplan-sync -m 700 /var/lib/tideplan-sync /var/backups/tideplan-sync
 install -m 644 "$deployment_source/sync/server.py" /opt/tideplan-sync/server.py
 install -m 644 "$deployment_source/sync/backup.py" /opt/tideplan-sync/backup.py
 install -m 755 "$deployment_source/deployment/backup-daily.sh" /opt/tideplan-sync/backup-daily.sh
 install -m 755 "$deployment_source/deployment/backup-audit.py" /opt/tideplan-sync/backup-audit.py
+install -m 755 "$deployment_source/deployment/backup-alert.py" /opt/oceanseo-alert/backup-alert.py
 install -m 644 "$deployment_source/host-monitor/collector.py" /opt/tideplan-monitor/collector.py
 install -m 644 "$deployment_source/sync/tideplan-sync.service" /etc/systemd/system/tideplan-sync.service
 install -m 644 "$deployment_source/host-monitor/tideplan-monitor.service" /etc/systemd/system/tideplan-monitor.service
@@ -28,6 +29,7 @@ install -m 644 "$deployment_source/deployment/tideplan-sync-backup.service" /etc
 install -m 644 "$deployment_source/deployment/tideplan-sync-backup.timer" /etc/systemd/system/tideplan-sync-backup.timer
 install -m 644 "$deployment_source/deployment/tideplan-backup-audit.service" /etc/systemd/system/tideplan-backup-audit.service
 install -m 644 "$deployment_source/deployment/tideplan-backup-audit.timer" /etc/systemd/system/tideplan-backup-audit.timer
+install -m 644 "$deployment_source/deployment/oceanseo-backup-alert@.service" /etc/systemd/system/oceanseo-backup-alert@.service
 python3 "$deployment_source/deployment/generate-credentials.py"
 if [ -f /etc/caddy/Caddyfile ]; then
     caddy_snapshot="/etc/caddy/Caddyfile.before-oceanseo-$(date -u +%Y%m%dT%H%M%SZ)"

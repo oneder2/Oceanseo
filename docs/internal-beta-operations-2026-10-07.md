@@ -16,10 +16,11 @@
 - 本机备份审计测试 5 项通过，核心测试 98 项通过，同步服务 7 项通过，账号服务 21 项通过，生产构建和 release contract 通过。
 - 已部署到 `oceanseo.gellaronline.cc`。两个审计 service 均实际退出 `0/SUCCESS`，两个 timer 为 `active`。
 - 线上 HTTPS、账号健康、同步健康和未授权边界复核通过；最新两套备份的完整性均为 `ok`，备份文件权限为私有模式。
+- 备份审计 service 增加了默认关闭的 `oceanseo-backup-alert@.service` 失败钩子；它只向用户配置的 HTTPS webhook 发送组件、时间和固定事件名，不发送路径、数据库内容、令牌或异常正文。
 
 ## 运维边界
 
-审计失败会使对应 oneshot service 失败并留下 systemd/journal 证据，但本轮尚未配置外部告警渠道。异地加密副本、留存策略和灾难恢复目标仍需在确定存储位置后配置；同机备份不能视为灾备。
+审计失败会使对应 oneshot service 失败并留下 systemd/journal 证据。外部告警钩子默认关闭；确定渠道后，将 `/etc/oceanseo-alert.env` 创建为 root 600 文件并只写入 `OCEANSEO_ALERT_WEBHOOK_URL=https://...`，再手动触发一次失败场景验证投递。异地加密副本、留存策略和灾难恢复目标仍需在确定存储位置后配置；同机备份不能视为灾备。
 
 ## 下一步验收
 

@@ -55,6 +55,8 @@ sudo ls -l /var/backups/oceanseo-accounts
 
 在线备份使用 SQLite backup API，并做 `integrity_check`。不要直接复制活动 WAL 数据库当作完整备份。新备份文件权限 600，目录权限 700；本机备份不等于异地灾备，目前没有替用户配置外部存储或自动删除策略。
 
+备份审计失败会触发 `oceanseo-backup-alert@accounts.service`。告警默认关闭；只有在服务器上以 root 600 权限创建 `/etc/oceanseo-alert.env` 并配置 HTTPS `OCEANSEO_ALERT_WEBHOOK_URL` 后才会发送脱敏事件。告警请求不包含数据库路径、业务资料、密码或令牌。
+
 先把备份恢复到独立私人目录并核对用户、资料库及撤销状态，不覆盖在线库。正式恢复需维护窗口、停止 v2 服务、保存当前数据库及 WAL、核实备份并制定会话全量撤销/重新邀请方案。恢复旧数据库可能使已撤销会话和邀请码恢复有效，客户端也会因云端 revision 回退暂停；不能只替换文件后让所有设备自动写入。
 
 ## 部署验证工具
