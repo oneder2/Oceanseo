@@ -1,0 +1,11 @@
+[Unit]
+Description=Audit Oceanseo private account database backup daily
+
+[Timer]
+OnCalendar=*-*-* 04:25:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=oceanseo-accounts-backup-audit.service
+
+[Install]
+WantedBy=timers.target

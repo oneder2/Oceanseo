@@ -8,6 +8,11 @@ const files = {
   ci: ".github/workflows/ci.yml",
   android: ".github/workflows/android.yml",
   androidRelease: ".github/workflows/android-release.yml",
+  backupAudit: "services/deployment/backup-audit.py",
+  syncAuditUnit: "services/deployment/tideplan-backup-audit.service",
+  accountsAuditUnit: "services/deployment/oceanseo-accounts-backup-audit.service",
+  syncAuditTimer: "services/deployment/tideplan-backup-audit.timer",
+  accountsAuditTimer: "services/deployment/oceanseo-accounts-backup-audit.timer",
 };
 const source = Object.fromEntries(await Promise.all(
   Object.entries(files).map(async ([key, file]) => [key, await readFile(file, "utf8")]),
@@ -24,12 +29,23 @@ assert.match(source.androidRelease, /TIDEPLAN_KEYSTORE_BASE64/);
 assert.match(source.androidRelease, /npm run android:release/);
 assert.match(source.androidRelease, /apksigner/);
 assert.doesNotMatch(source.ci, /TIDEPLAN_KEYSTORE_PASSWORD/);
+assert.match(source.backupAudit, /PRAGMA integrity_check/);
+assert.match(source.backupAudit, /max-age-hours/);
+assert.match(source.syncAuditUnit, /\/opt\/tideplan-sync\/backup-audit.py/);
+assert.match(source.accountsAuditUnit, /\/opt\/oceanseo-accounts\/services\/deployment\/backup-audit.py/);
+assert.match(source.syncAuditTimer, /Persistent=true/);
+assert.match(source.accountsAuditTimer, /Persistent=true/);
 
 const report = {
   contract: "internal-beta-release",
   serviceHealth: ["/health/accounts", "/health/sync"],
   secretPolicy: "formal signing secrets are external to CI and repository",
   androidArtifactHashes: true,
+  backupAudit: {
+    freshnessHours: 30,
+    checks: ["private mode", "sqlite integrity", "required schema"],
+    timers: ["sync", "accounts"],
+  },
   generatedAt: new Date().toISOString(),
 };
 await mkdir("output/playwright", { recursive: true });

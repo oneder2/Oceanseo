@@ -40,7 +40,7 @@ rollback() {
         systemctl reload caddy.service || true
     fi
     if [ "$units_installed" = true ]; then
-        systemctl disable --now oceanseo-accounts-backup.timer oceanseo-accounts.service || true
+        systemctl disable --now oceanseo-accounts-backup.timer oceanseo-accounts-backup-audit.timer oceanseo-accounts.service || true
     fi
     printf 'Install failed; new private directories preserved for inspection\n' >&2
 }
@@ -56,11 +56,14 @@ for module in server.py backup.py; do
     install -m 644 "$deployment_source/sync/$module" "/opt/oceanseo-accounts/services/sync/$module"
 done
 install -m 755 "$deployment_source/deployment/accounts-backup-daily.sh" /opt/oceanseo-accounts/services/deployment/accounts-backup-daily.sh
+install -m 755 "$deployment_source/deployment/backup-audit.py" /opt/oceanseo-accounts/services/deployment/backup-audit.py
 install -m 644 "$deployment_source/deployment/verify-accounts.py" /opt/oceanseo-accounts/services/deployment/verify-accounts.py
 install -o root -g root -m 600 "$deployment_source/accounts/accounts.env.example" /etc/oceanseo-accounts.env
 install -m 644 "$deployment_source/accounts/oceanseo-accounts.service" /etc/systemd/system/oceanseo-accounts.service
 install -m 644 "$deployment_source/deployment/oceanseo-accounts-backup.service" /etc/systemd/system/oceanseo-accounts-backup.service
 install -m 644 "$deployment_source/deployment/oceanseo-accounts-backup.timer" /etc/systemd/system/oceanseo-accounts-backup.timer
+install -m 644 "$deployment_source/deployment/oceanseo-accounts-backup-audit.service" /etc/systemd/system/oceanseo-accounts-backup-audit.service
+install -m 644 "$deployment_source/deployment/oceanseo-accounts-backup-audit.timer" /etc/systemd/system/oceanseo-accounts-backup-audit.timer
 units_installed=true
 systemctl daemon-reload
 systemctl enable --now oceanseo-accounts.service
@@ -78,6 +81,8 @@ caddy_installed=true
 systemctl reload caddy.service
 systemctl enable --now oceanseo-accounts-backup.timer
 systemctl start oceanseo-accounts-backup.service
+systemctl enable --now oceanseo-accounts-backup-audit.timer
+systemctl start oceanseo-accounts-backup-audit.service
 systemctl is-active oceanseo-accounts.service tideplan-sync.service tideplan-monitor.service caddy.service
 trap - EXIT HUP INT TERM
 printf 'Independent v2 installed; run HTTPS/isolation/restart/backup verification before inviting users\n'

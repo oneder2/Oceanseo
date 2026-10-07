@@ -1,0 +1,14 @@
+[Unit]
+Description=Audit Tideplan private sync database backup
+After=tideplan-sync-backup.service
+
+[Service]
+Type=oneshot
+User=tideplan-sync
+Group=tideplan-sync
+ExecStart=/usr/bin/python3 /opt/tideplan-sync/backup-audit.py --label sync --database /var/lib/tideplan-sync/vault.sqlite3 --backup-dir /var/backups/tideplan-sync --required-table vault --max-age-hours 30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077

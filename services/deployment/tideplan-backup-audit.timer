@@ -1,0 +1,11 @@
+[Unit]
+Description=Audit Tideplan private sync database backup daily
+
+[Timer]
+OnCalendar=*-*-* 04:05:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=tideplan-backup-audit.service
+
+[Install]
+WantedBy=timers.target
