@@ -1,0 +1,68 @@
+name: Android signed release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-candidate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.1.0' 'ndk;28.2.13676358'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Build signed APK and AAB
+        env:
+          TIDEPLAN_KEYSTORE_BASE64: ${{ secrets.TIDEPLAN_KEYSTORE_BASE64 }}
+          TIDEPLAN_KEYSTORE_PASSWORD: ${{ secrets.TIDEPLAN_KEYSTORE_PASSWORD }}
+          TIDEPLAN_KEY_ALIAS: ${{ secrets.TIDEPLAN_KEY_ALIAS }}
+          TIDEPLAN_KEY_PASSWORD: ${{ secrets.TIDEPLAN_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in TIDEPLAN_KEYSTORE_BASE64 TIDEPLAN_KEYSTORE_PASSWORD TIDEPLAN_KEY_ALIAS TIDEPLAN_KEY_PASSWORD; do
+            test -n "${!name}" || { echo "Missing required signing secret: $name" >&2; exit 1; }
+          done
+          key="$RUNNER_TEMP/oceanseo-release.jks"
+          printf '%s' "$TIDEPLAN_KEYSTORE_BASE64" | base64 --decode > "$key"
+          chmod 600 "$key"
+          test -s "$key"
+          export TIDEPLAN_KEYSTORE_PATH="$key"
+          export NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          npm run android:release
+      - name: Verify and stage signed artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          mapfile -t artifacts < <(find src-tauri/gen/android/app/build/outputs -type f \( -name '*.apk' -o -name '*.aab' \) | sort)
+          test "${#artifacts[@]}" -ge 2
+          for artifact in "${artifacts[@]}"; do
+            case "$artifact" in
+              *.apk) "$ANDROID_HOME/build-tools/36.1.0/apksigner" verify --verbose "$artifact" ;;
+              *.aab) test -s "$artifact" ;;
+            esac
+            cp "$artifact" release-artifacts/
+          done
+          sha256sum release-artifacts/* > release-artifacts/SHA256SUMS
+          cat release-artifacts/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Oceanseo-Android-SIGNED-RELEASE-CANDIDATE
+          path: release-artifacts
+          if-no-files-found: error
+          retention-days: 14

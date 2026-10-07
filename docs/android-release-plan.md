@@ -49,4 +49,6 @@ Android 工程已纳入版本控制，包含原生提醒与安全存储。**不�
 
 正式构建命令 `npm run android:release` 要求 TIDEPLAN_KEYSTORE_PATH、TIDEPLAN_KEYSTORE_PASSWORD、TIDEPLAN_KEY_ALIAS、TIDEPLAN_KEY_PASSWORD，缺少时会停止。密钥放仓库外并离线备份；脚本不创建或上传密钥。桌面 applicationId 保持不变，避免改变现有用户数据目录。
 
+仓库提供手动触发的 `.github/workflows/android-release.yml`，用于生成签名 Release Candidate。它要求 GitHub Actions secrets `TIDEPLAN_KEYSTORE_BASE64`、`TIDEPLAN_KEYSTORE_PASSWORD`、`TIDEPLAN_KEY_ALIAS`、`TIDEPLAN_KEY_PASSWORD`；工作流只在 runner 临时目录解码密钥，校验 APK 签名并上传 APK/AAB 与 `SHA256SUMS`，保留 14 天，不创建 GitHub Release、不替换公网下载包。正式密钥尚未配置时，不能声称该工作流已经生成正式产物。
+
 `.github/workflows/android.yml` 可手动执行或由相关 PR 触发，仅上传内部调试产物，不上传商店、不使用正式密钥。CI 的临时调试签名不用于连续公开升级。
