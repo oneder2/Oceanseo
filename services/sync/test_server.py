@@ -1,6 +1,7 @@
 import concurrent.futures
 import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -55,6 +56,25 @@ class SyncServiceTest(unittest.TestCase):
         value = json.loads(response.read())
         conn.close()
         self.assertEqual(value, {"ok": True, "service": "sync", "schemaVersion": 1})
+
+    def test_health_rejects_missing_or_stale_backup_audit(self):
+        status = self.db.with_name("backup-audit-status.json")
+        self.server.store.backup_status = status
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        conn.request("GET", "/health")
+        self.assertEqual(conn.getresponse().status, 503)
+        conn.close()
+        status.write_text('{"status":"ok"}', encoding="utf-8")
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        conn.request("GET", "/health")
+        self.assertEqual(conn.getresponse().status, 200)
+        conn.close()
+        old = status.stat().st_mtime
+        os.utime(status, (old, old - 31 * 3600))
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        conn.request("GET", "/health")
+        self.assertEqual(conn.getresponse().status, 503)
+        conn.close()
 
     def test_stale_device_and_retry(self):
         _, old = self.request()

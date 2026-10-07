@@ -13,6 +13,8 @@ const files = {
   accountsAuditUnit: "services/deployment/oceanseo-accounts-backup-audit.service",
   syncAuditTimer: "services/deployment/tideplan-backup-audit.timer",
   accountsAuditTimer: "services/deployment/oceanseo-accounts-backup-audit.timer",
+  syncServer: "services/sync/server.py",
+  accountsServer: "services/accounts/store.py",
 };
 const source = Object.fromEntries(await Promise.all(
   Object.entries(files).map(async ([key, file]) => [key, await readFile(file, "utf8")]),
@@ -35,6 +37,12 @@ assert.match(source.syncAuditUnit, /\/opt\/tideplan-sync\/backup-audit.py/);
 assert.match(source.accountsAuditUnit, /\/opt\/oceanseo-accounts\/services\/deployment\/backup-audit.py/);
 assert.match(source.syncAuditTimer, /Persistent=true/);
 assert.match(source.accountsAuditTimer, /Persistent=true/);
+assert.match(source.syncServer, /backup_status/);
+assert.match(source.syncServer, /30 \* 3600/);
+assert.match(source.accountsServer, /backup_status/);
+assert.match(source.accountsServer, /30 \* 3600/);
+assert.match(source.ci, /npm run test:sync-server/);
+assert.match(source.ci, /npm run test:accounts-server/);
 
 const report = {
   contract: "internal-beta-release",

@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backup-dir", required=True, type=Path)
     parser.add_argument("--max-age-hours", type=float, default=30.0)
     parser.add_argument("--required-table", action="append", default=[])
+    parser.add_argument("--status-file", type=Path)
     return parser.parse_args()
 
 
@@ -51,6 +52,24 @@ def table_names(path: Path) -> set[str]:
 
 def fail(message: str) -> None:
     raise RuntimeError(message)
+
+
+def write_status(path: Path | None, status: str) -> None:
+    if path is None:
+        return
+    if not path.is_absolute():
+        raise RuntimeError("status path must be absolute")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        temporary.write_text(json.dumps({"status": status}) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def audit(args: argparse.Namespace) -> dict[str, object]:
@@ -103,8 +122,13 @@ def main() -> int:
     try:
         result = audit(args)
     except (OSError, RuntimeError, sqlite3.DatabaseError) as error:
+        try:
+            write_status(args.status_file, "error")
+        except (OSError, RuntimeError):
+            pass
         print(json.dumps({"status": "error", "label": args.label, "error": str(error)}))
         return 1
+    write_status(args.status_file, "ok")
     print(json.dumps(result, sort_keys=True))
     return 0
 

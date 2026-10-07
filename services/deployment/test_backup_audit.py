@@ -55,6 +55,14 @@ class BackupAuditTests(unittest.TestCase):
         )
         return result, json.loads(result.stdout)
 
+    def test_writes_private_status_marker(self):
+        marker = self.root / "status.json"
+        result, report = self.run_audit("--status-file", str(marker))
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(json.loads(marker.read_text()), {"status": "ok"})
+        self.assertEqual(stat.S_IMODE(marker.stat().st_mode), 0o600)
+
     def test_accepts_private_recent_integrity_checked_backup(self):
         result, report = self.run_audit()
         self.assertEqual(result.returncode, 0)

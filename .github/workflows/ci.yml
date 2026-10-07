@@ -18,6 +18,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:backup-audit
+      - run: npm run test:sync-server
+      - run: npm run test:accounts-server
       - run: npm run build
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked

@@ -1,6 +1,7 @@
 import concurrent.futures
 import http.client
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -94,6 +95,19 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(result, {"ok": True, "service": "accounts", "schemaVersion": 1})
         self.assertNotIn("users", result)
         self.assertNotIn("vaultId", result)
+
+    def test_health_rejects_missing_or_stale_backup_audit(self):
+        status = self.path.with_name("backup-audit-status.json")
+        self.server.store.backup_status = status
+        code, _ = self.request("GET", "/v2/health")
+        self.assertEqual(code, 503)
+        status.write_text('{"status":"ok"}', encoding="utf-8")
+        code, _ = self.request("GET", "/v2/health")
+        self.assertEqual(code, 200)
+        old = status.stat().st_mtime
+        os.utime(status, (old, old - 31 * 3600))
+        code, _ = self.request("GET", "/v2/health")
+        self.assertEqual(code, 503)
 
     def test_user_isolation_and_foreign_vault_attack(self):
         alice, bob = self.register(), self.register("bob")

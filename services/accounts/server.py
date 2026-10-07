@@ -142,17 +142,22 @@ class Handler(BaseHTTPRequestHandler):
     do_DELETE = run
 
 
-def create_server(address, database, clock=None):
+def create_server(address, database, clock=None, backup_status=None):
     if address[0] not in ("127.0.0.1", "localhost"):
         raise ValueError("Account service must bind to loopback; use an HTTPS proxy")
     os.umask(0o077)
-    store = AccountStore(database, **({"clock": clock} if clock else {}))
+    options = {"clock": clock} if clock else {}
+    if backup_status:
+        options["backup_status"] = backup_status
+    store = AccountStore(database, **options)
     return AccountServer(address, store)
 
 
 if __name__ == "__main__":
+    database = os.environ.get("OCEANSEO_ACCOUNTS_DB", "./private/accounts.sqlite3")
+    backup_status = os.environ.get("OCEANSEO_ACCOUNTS_BACKUP_STATUS") or os.path.join(os.path.dirname(database), "backup-audit-status.json")
     server = create_server(("127.0.0.1", int(os.environ.get("OCEANSEO_ACCOUNTS_PORT", "4791"))),
-                           os.environ.get("OCEANSEO_ACCOUNTS_DB", "./private/accounts.sqlite3"))
+                           database, backup_status=backup_status)
     print("Oceanseo invitation-only accounts ready on loopback.", flush=True)
     try:
         server.serve_forever()

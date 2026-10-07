@@ -79,6 +79,8 @@ if ! sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
 fi
 sudo systemctl restart oceanseo-accounts tideplan-sync
 sudo systemctl daemon-reload
+sudo systemctl enable --now tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer
+sudo systemctl start tideplan-backup-audit.service oceanseo-accounts-backup-audit.service
 wait_for() {
   for _ in $(seq 1 20); do
     if "$@" >/dev/null; then
@@ -91,8 +93,6 @@ wait_for() {
 wait_for curl --fail --silent --show-error --max-time 2 http://127.0.0.1:4791/v2/health
 wait_for curl --fail --silent --show-error --max-time 2 http://127.0.0.1:4789/health
 sudo systemctl reload caddy
-sudo systemctl enable --now tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer
-sudo systemctl start tideplan-backup-audit.service oceanseo-accounts-backup-audit.service
 sudo systemctl is-active oceanseo-accounts tideplan-sync tideplan-monitor caddy
 if ! wait_for curl --fail --silent --show-error --max-time 2 --resolve oceanseo.gellaronline.cc:443:127.0.0.1 https://oceanseo.gellaronline.cc/health/accounts; then
   exit 1

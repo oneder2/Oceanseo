@@ -26,9 +26,10 @@ class ApiError(Exception):
 
 
 class AccountStore:
-    def __init__(self, path, clock=time.time):
+    def __init__(self, path, clock=time.time, backup_status=None):
         self.path = Path(path)
         self.clock = clock
+        self.backup_status = Path(backup_status) if backup_status else None
         if self.path.is_symlink():
             raise ValueError("Account database must not be a symlink")
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -94,6 +95,14 @@ class AccountStore:
             if version != SCHEMA_VERSION or not expected <= tables:
                 raise sqlite3.DatabaseError("account schema is not ready")
             db.execute("SELECT 1 FROM vaults LIMIT 1").fetchone()
+        if self.backup_status is not None:
+            try:
+                status = json.loads(self.backup_status.read_text(encoding="utf-8"))
+                age = time.time() - self.backup_status.stat().st_mtime
+                if status.get("status") != "ok" or age > 30 * 3600:
+                    raise sqlite3.DatabaseError("backup audit is not current")
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                raise sqlite3.DatabaseError("backup audit is unavailable") from error
         return {"ok": True, "service": "accounts", "schemaVersion": SCHEMA_VERSION}
 
     def throttle(self, username):

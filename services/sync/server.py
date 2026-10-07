@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -38,8 +39,9 @@ def validate_update(value):
 
 
 class VaultStore:
-    def __init__(self, path):
+    def __init__(self, path, backup_status=None):
         self.path = str(path)
+        self.backup_status = Path(backup_status) if backup_status else None
         self.lock = threading.Lock()
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
@@ -75,6 +77,14 @@ class VaultStore:
             if table is None:
                 raise sqlite3.DatabaseError("vault schema is not ready")
             db.execute("SELECT singleton FROM vault WHERE singleton=1").fetchone()
+        if self.backup_status is not None:
+            try:
+                status = json.loads(self.backup_status.read_text(encoding="utf-8"))
+                age = time.time() - self.backup_status.stat().st_mtime
+                if status.get("status") != "ok" or age > 30 * 3600:
+                    raise sqlite3.DatabaseError("backup audit is not current")
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                raise sqlite3.DatabaseError("backup audit is unavailable") from error
         return {"ok": True, "service": "sync", "schemaVersion": 1}
 
     def put(self, value):
@@ -174,22 +184,25 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(503, {"error": "storage_unavailable"})
 
 
-def create_server(address, database, token):
+def create_server(address, database, token, backup_status=None):
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,512}", token):
         raise ValueError("TIDEPLAN_SYNC_TOKEN must be a 32–512 character random URL-safe token")
     server = ThreadingHTTPServer(address, Handler)
     server.daemon_threads = True
-    server.store = VaultStore(database)
+    server.store = VaultStore(database, backup_status)
     server.token = token
     return server
 
 
 if __name__ == "__main__":
     os.umask(0o077)
+    database = os.environ.get("TIDEPLAN_SYNC_DB", "./data/vault.sqlite3")
+    backup_status = os.environ.get("TIDEPLAN_SYNC_BACKUP_STATUS") or str(Path(database).with_name("backup-audit-status.json"))
     server = create_server(
         (os.environ.get("TIDEPLAN_SYNC_HOST", "127.0.0.1"), int(os.environ.get("TIDEPLAN_SYNC_PORT", "4789"))),
-        os.environ.get("TIDEPLAN_SYNC_DB", "./data/vault.sqlite3"),
+        database,
         os.environ.get("TIDEPLAN_SYNC_TOKEN", ""),
+        backup_status,
     )
     print("Tideplan sync ready. Private beta, one owner per vault.", flush=True)
     server.serve_forever()
