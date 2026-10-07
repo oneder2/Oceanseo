@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { ArrowRightLeft, Check, Eye, EyeOff, KeyRound, LogIn, LogOut, Monitor, RefreshCw, ShieldCheck, Smartphone, UserRound, X } from "lucide-react";
+import { ArrowRightLeft, Check, Eye, EyeOff, KeyRound, LogIn, LogOut, Monitor, RefreshCw, ShieldCheck, Smartphone, Trash2, UserRound, X } from "lucide-react";
 import { accountSessions, localProfiles, profileStatus, restartSelectedProfile, signInAccount, switchProfile, type DeviceSession, type LocalProfile, type ProfileStatus } from "./accountStore";
 import { platform } from "./platform";
 import "./account.css";
@@ -29,6 +29,8 @@ export default function AccountSettings({ onBusy, onChange }: {
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [failedLogout, setFailedLogout] = useState(false);
   const confirmationRef = useRef<HTMLDivElement>(null);
@@ -119,7 +121,7 @@ export default function AccountSettings({ onBusy, onChange }: {
       </div>
       <details className="account-data-notice"><summary>账号数据与隐私</summary>
         <p>登录并打开账号后，已保存的任务、笔记、目标和对话会自动同步。原本机资料不会自动导入；生活模块、未提交草稿和服务密钥暂不上传。</p>
-        <p>云端资料通过 HTTPS 传输，但不是端到端加密，服务器维护者可以访问。退出登录不会删除记录。需要删除账号或云端资料时，请通过内测邀请渠道联系维护者。</p>
+        <p>云端资料通过 HTTPS 传输，但不是端到端加密，服务器维护者可以访问。退出登录不会删除记录。删除账号会删除云端资料库和所有设备会话，本机资料会保留为离线副本。</p>
       </details>
       <form className="account-form" onSubmit={e => { e.preventDefault(); void action(async () => {
         const next = await signInAccount({ endpoint, username, password, deviceName, invite: register ? invite : null });
@@ -162,6 +164,19 @@ export default function AccountSettings({ onBusy, onChange }: {
           <label><span>新密码</span><input aria-label="新密码" type="password" autoComplete="new-password" required minLength={12} maxLength={128} value={newPassword} onChange={e => setNewPassword(e.target.value)} disabled={busy} /></label>
           <label><span>再次输入新密码</span><input aria-label="再次输入新密码" type="password" autoComplete="new-password" required minLength={12} maxLength={128} value={repeatPassword} onChange={e => setRepeatPassword(e.target.value)} disabled={busy} /></label>
           <p className="account-wide account-meta">修改后所有设备都需重新登录，本机资料保留。</p><button className="primary-button" type="submit" disabled={busy}><KeyRound size={15} />修改密码并退出全部设备</button>
+        </form>
+      </details>}
+      {current?.signedIn && <details className="account-danger-zone">
+        <summary><Trash2 size={15} />删除云端账号</summary>
+        <p>此操作会永久删除云端账号、任务资料库和所有设备会话，无法通过应用撤销。本机资料会保留，但立即变为离线副本；建议先导出备份。</p>
+        <form className="account-form" onSubmit={e => { e.preventDefault(); void action(async () => {
+          await invoke("delete_account", { password: deletePassword, confirmation: deleteConfirmation });
+          setDeletePassword(""); setDeleteConfirmation(""); setSessions(null); await refresh();
+          setMessage("云端账号已删除。本机资料已保留为离线副本，请确认备份后再清理。");
+        }); }}>
+          <label><span>当前密码</span><input aria-label="删除账号的当前密码" type="password" autoComplete="current-password" required minLength={12} maxLength={128} value={deletePassword} onChange={e => setDeletePassword(e.target.value)} disabled={busy} /></label>
+          <label><span>输入 DELETE 确认</span><input aria-label="删除账号确认词" required pattern="DELETE" value={deleteConfirmation} onChange={e => setDeleteConfirmation(e.target.value)} disabled={busy} /></label>
+          <button className="danger account-wide" type="submit" disabled={busy || deleteConfirmation !== "DELETE"}><Trash2 size={15} />永久删除云端账号</button>
         </form>
       </details>}
     </div>}

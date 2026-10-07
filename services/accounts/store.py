@@ -247,6 +247,28 @@ class AccountStore:
             db.execute("DELETE FROM sessions WHERE owner_id=?", (current["owner_id"],))
         return {"signInRequired": True}
 
+    def delete_account(self, token, password, confirmation):
+        if confirmation != "DELETE":
+            raise ValueError("confirmation")
+        with self.connect() as db:
+            session = self.authenticate(db, token)
+        self.throttle(session["username"])
+        if not verify_password(password, session["password_hash"]):
+            raise ApiError(401, "invalid_credentials")
+        with self.connect(write=True) as db:
+            current = self.authenticate(db, token)
+            if current["password_hash"] != session["password_hash"]:
+                raise ApiError(409, "credentials_changed")
+            owner_id = current["owner_id"]
+            # Remove cloud content and sessions atomically. Keep the invite row but
+            # remove the consumed invite so it cannot be reused after deletion.
+            db.execute("DELETE FROM sessions WHERE owner_id=?", (owner_id,))
+            db.execute("DELETE FROM vaults WHERE owner_id=?", (owner_id,))
+            db.execute("DELETE FROM invites WHERE used_by=?", (owner_id,))
+            db.execute("DELETE FROM auth_limits WHERE subject=?", ("name:" + token_hash(current["username"]),))
+            db.execute("DELETE FROM users WHERE id=?", (owner_id,))
+        return {"deleted": True}
+
     @staticmethod
     def vault_row(db, owner_id):
         row = db.execute("SELECT * FROM vaults WHERE owner_id=?", (owner_id,)).fetchone()

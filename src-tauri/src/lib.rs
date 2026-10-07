@@ -293,6 +293,7 @@ pub fn run() {
             accounts::revoke_account_session,
             accounts::logout_account,
             accounts::change_account_password,
+            accounts::delete_account,
             sync::get_sync_status,
             infrastructure::check_host_endpoint,
             infrastructure::open_host_url,

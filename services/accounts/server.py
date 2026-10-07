@@ -111,6 +111,9 @@ class Handler(BaseHTTPRequestHandler):
             store.me(token)
             v = self.body(["currentPassword", "password"])
             return 200, store.change_password(token, v["currentPassword"], v["password"])
+        if route == "/v2/account" and self.command == "DELETE":
+            v = self.body(["password", "confirmation"])
+            return 200, store.delete_account(self.token(), v["password"], v["confirmation"])
         if route == "/v2/vault" and self.command == "GET":
             return 200, store.get_vault(self.token())
         if route == "/v2/vault" and self.command == "PUT":

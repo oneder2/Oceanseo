@@ -38,6 +38,11 @@
 .account-devices li p { font-size: 13px; line-height: 1.7; color: var(--muted); margin: 4px 0; overflow-wrap: anywhere; }
 .account-password-change { padding-top: 12px; }
 .account-password-change summary > svg { vertical-align: middle; margin-right: 6px; }
+.account-danger-zone { margin-top: 20px; border: 1px solid color-mix(in srgb, var(--coral-dark) 45%, var(--line)); border-radius: 6px; padding: 0 14px 14px; }
+.account-danger-zone > summary { color: var(--coral-dark); }
+.account-danger-zone > p { color: var(--muted); font-size: 14px; line-height: 1.7; }
+.account-danger-zone .danger { min-height: 44px; border-color: #bd5548; background: #bd5548; color: #fff; }
+.account-danger-zone .danger:hover:not(:disabled) { border-color: #9f4037; background: #9f4037; }
 .account-error { font-size: 14px; line-height: 1.7; color: var(--coral-dark); overflow-wrap: anywhere; }
 .account-data-notice { margin-bottom: 16px; color: var(--muted); }
 .account-data-notice p { font-size: 14px; line-height: 1.7; margin-block: 8px; }

@@ -471,6 +471,39 @@ pub async fn change_account_password(
     runtime.status()
 }
 
+#[tauri::command]
+pub async fn delete_account(
+    runtime: tauri::State<'_, ProfileRuntime>,
+    sync: tauri::State<'_, SyncRuntime>,
+    password: String,
+    confirmation: String,
+) -> Result<ProfileStatus, String> {
+    let _guard = runtime.gate.lock().await;
+    let _sync_guard = sync.gate.lock().await;
+    if confirmation != "DELETE" {
+        return Err("请输入 DELETE 以确认删除云端账号".into());
+    }
+    let mut account = active_account(&runtime)?;
+    verify_identity(&account).await?;
+    let result = request(
+        &account.endpoint,
+        "/v2/account",
+        reqwest::Method::DELETE,
+        Some(&account.token),
+        Some(json!({"password":password,"confirmation":confirmation})),
+    )
+    .await?;
+    if result != json!({"deleted":true}) {
+        return Err("账号删除响应无效，云端资料状态未确认".into());
+    }
+    // Keep the local account database available for export, but make it offline
+    // immediately so a deleted cloud account cannot receive further writes.
+    account.token.clear();
+    runtime.save_account(&account)?;
+    *sync.preview.lock().map_err(|_| "同步状态不可用")? = None;
+    runtime.status()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,6 +15,7 @@ const files = {
   accountsAuditTimer: "services/deployment/oceanseo-accounts-backup-audit.timer",
   syncServer: "services/sync/server.py",
   accountsServer: "services/accounts/store.py",
+  accountsApi: "services/accounts/server.py",
   androidReleaseVerify: "scripts/android-release-verify.mjs",
 };
 const source = Object.fromEntries(await Promise.all(
@@ -42,6 +43,10 @@ assert.match(source.syncServer, /backup_status/);
 assert.match(source.syncServer, /30 \* 3600/);
 assert.match(source.accountsServer, /backup_status/);
 assert.match(source.accountsServer, /30 \* 3600/);
+assert.match(source.accountsServer, /delete_account/);
+assert.match(source.accountsServer, /confirmation != "DELETE"/);
+assert.match(source.accountsApi, /route == "\/v2\/account"/);
+assert.match(source.accountsApi, /self\.command == "DELETE"/);
 assert.match(source.ci, /npm run test:sync-server/);
 assert.match(source.ci, /npm run test:accounts-server/);
 assert.match(source.androidRelease, /android-release-verify\.mjs/);

@@ -164,6 +164,25 @@ class AccountsTest(unittest.TestCase):
         self.assertEqual(self.login(password=PASSWORD)[0], 401)
         self.assertEqual(self.login(password=new)[0], 200)
 
+    def test_account_deletion_requires_confirmation_and_removes_cloud_data(self):
+        invite = self.server.store.create_invite()
+        account = self.register("delete-me", invite)
+        vault = self.vault(account)
+        self.assertEqual(self.put(account, vault, {KEY: {"title": "cloud only"}})[0], 200)
+        wrong = self.request("DELETE", "/v2/account", {"password": PASSWORD + "wrong", "confirmation": "DELETE"}, account["token"])
+        self.assertEqual(wrong[0], 401)
+        self.assertEqual(self.request("GET", "/v2/me", token=account["token"])[0], 200)
+        unconfirmed = self.request("DELETE", "/v2/account", {"password": PASSWORD, "confirmation": "delete"}, account["token"])
+        self.assertEqual(unconfirmed[0], 400)
+        deleted = self.request("DELETE", "/v2/account", {"password": PASSWORD, "confirmation": "DELETE"}, account["token"])
+        self.assertEqual(deleted, (200, {"deleted": True}))
+        self.assertEqual(self.request("GET", "/v2/me", token=account["token"])[0], 401)
+        with self.server.store.connect() as db:
+            self.assertIsNone(db.execute("SELECT id FROM users WHERE username='delete-me'").fetchone())
+            self.assertIsNone(db.execute("SELECT owner_id FROM vaults WHERE owner_id=?", (account["user"]["id"],)).fetchone())
+            self.assertIsNone(db.execute("SELECT id FROM sessions WHERE owner_id=?", (account["user"]["id"],)).fetchone())
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM invites").fetchone()[0], 0)
+
     def test_expiry_and_restart_preserve_identity_and_revocations(self):
         invite = self.server.store.create_invite(hours=1)
         self.now += 3601
