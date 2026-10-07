@@ -447,7 +447,8 @@ mod tests {
             let handle = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
                 let mut buf = [0; 4096];
-                socket.read(&mut buf).unwrap();
+                let read = socket.read(&mut buf).unwrap();
+                assert!(read > 0);
                 let body = if large {
                     "x".repeat(16385)
                 } else {

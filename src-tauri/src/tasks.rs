@@ -1060,7 +1060,7 @@ fn origin_columns(origin: Option<&TaskOrigin>) -> (Option<&str>, Option<&str>, O
 }
 
 fn normalize_optional_date(value: Option<String>) -> Option<String> {
-    value.and_then(|date| if date.is_empty() { None } else { Some(date) })
+    value.filter(|date| !date.is_empty())
 }
 
 pub(crate) fn validate_task(task: &TaskRecord) -> Result<(), &'static str> {
