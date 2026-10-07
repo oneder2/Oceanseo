@@ -92,6 +92,8 @@ class Handler(BaseHTTPRequestHandler):
     def dispatch(self):
         store = self.server.store
         route = self.path
+        if route == "/v2/health" and self.command == "GET":
+            return 200, store.health()
         if route == "/v2/register" and self.command == "POST":
             v = self.body(["username", "password", "invite", "deviceName", "platform"])
             return 201, store.register(v["username"], v["password"], v["invite"], v["deviceName"], v["platform"])

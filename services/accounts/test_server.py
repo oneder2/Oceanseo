@@ -88,6 +88,13 @@ class AccountsTest(unittest.TestCase):
         self.assertNotIn(account["token"].encode(), data)
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
+    def test_health_is_public_but_does_not_expose_account_data(self):
+        code, result = self.request("GET", "/v2/health")
+        self.assertEqual(code, 200)
+        self.assertEqual(result, {"ok": True, "service": "accounts", "schemaVersion": 1})
+        self.assertNotIn("users", result)
+        self.assertNotIn("vaultId", result)
+
     def test_user_isolation_and_foreign_vault_attack(self):
         alice, bob = self.register(), self.register("bob")
         av, bv = self.vault(alice), self.vault(bob)

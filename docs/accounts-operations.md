@@ -5,6 +5,7 @@
 ## 边界
 
 - `/v2/*` 使用独立 `oceanseo-accounts.service`、回环端口 4791、数据库 `/var/lib/oceanseo-accounts/accounts.sqlite3`。
+- 服务级只读健康检查为 `/health/accounts`；它只返回服务名和 schema 版本，不需要账号 token，也不返回用户数量、资料库 ID 或业务内容。
 - `/v1/vault`、原同步令牌、原个人资料和 `/metrics` 不迁移、不复用、不关闭。下载页与已发布安装包保持不变。
 - 不开放公开注册。注册必须提供一次性邀请，默认 72 小时有效。每个用户名拥有独立用户和资料库，登录签发独立设备会话。
 - 云端业务资料不是端到端加密；服务器维护者可访问数据。备份包含密码哈希和会话摘要，必须私人保管。
@@ -62,4 +63,6 @@ sudo ls -l /var/backups/oceanseo-accounts
 
 状态文件及恢复副本必须在仓库外的 700 目录；文件权限 600。正式域名验证只允许 HTTPS，拒绝跟随重定向。`--allow-local` 只用于临时回环 HTTP 服务测试。
 
-本地回归：`npm run test:accounts-server` 包含账号服务 16 项和部署验证 2 项，检查既有账号不会被合成账号清理影响。
+本地回归：`npm run test:accounts-server` 包含账号服务 17 项和部署验证 2 项，检查既有账号不会被合成账号清理影响。
+
+服务更新使用 `services/deployment/deploy-services.sh`。脚本只上传服务代码和 Caddyfile，拒绝携带环境文件、邀请码、数据库或密钥；先保存远端代码副本，等待两个回环健康端点就绪，再校验 Caddy 并 reload。任一健康检查失败会恢复代码与配置，不会自动修改业务数据库。

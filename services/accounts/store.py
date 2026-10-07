@@ -85,6 +85,17 @@ class AccountStore:
     def now(self):
         return int(self.clock())
 
+    def health(self):
+        """Return only schema readiness; never expose account or vault counts."""
+        expected = {"users", "vaults", "invites", "sessions", "auth_limits"}
+        with self.connect() as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if version != SCHEMA_VERSION or not expected <= tables:
+                raise sqlite3.DatabaseError("account schema is not ready")
+            db.execute("SELECT 1 FROM vaults LIMIT 1").fetchone()
+        return {"ok": True, "service": "accounts", "schemaVersion": SCHEMA_VERSION}
+
     def throttle(self, username):
         # Global limit is intentional behind a proxy: never trust client-supplied IP headers.
         now = self.now()

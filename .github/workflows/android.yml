@@ -41,9 +41,13 @@ jobs:
       - run: NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358" npm run android:build
       - run: ./gradlew :app:testUniversalDebugUnitTest -x rustBuildArm64Debug -PabiList=arm64-v8a -ParchList=arm64 -PtargetList=aarch64 --console=plain
         working-directory: src-tauri/gen/android
+      - name: Hash internal APK artifacts
+        run: find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' -print0 | sort -z | xargs -0 sha256sum | tee android-artifacts.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: Tideplan-Android-arm64-INTERNAL-DEBUG
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            android-artifacts.sha256
           if-no-files-found: error
           retention-days: 14

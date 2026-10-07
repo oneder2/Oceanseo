@@ -2,7 +2,7 @@
 
 多用户账号另见 [账号与同步](accounts-and-sync.md)：独立 `/v2/*` 邀请服务已上线，开发版独立账号入口、默认前台自动同步及 Linux/Pixel 首次连接与双向任务验收通过。见 [当前交付报告](account-center-deployment-2026-10-05.md)。公开安装包尚未更新，以下仍描述已发布的 v1 个人同步。
 
-用户已反馈第一阶段初步验收未发现问题，进入第二阶段，交付可自托管的个人同步服务和 Linux / Android 共用客户端。2026-10-04 已首次部署个人私有 HTTPS 后端，域名 `oceanseo.gellaronline.cc`；见 [部署与接入报告](server-deployment-2026-10-04.md)。2026-10-05 已完成 Linux 原生与 Pixel 独立验收包的真实双端隔离同步，最终任务全部字段一致，revision 4、pending 0，见 [0.18.0 报告](release-0.18.0.md)。未将日常设备连接正式资料库，生产环境连续使用验收仍未执行。
+用户已反馈第一阶段初步验收未发现问题，进入第二阶段，交付可自托管的个人同步服务和 Linux / Android 共用客户端。2026-10-04 已首次部署个人私有 HTTPS 后端，域名 `oceanseo.gellaronline.cc`；见 [部署与接入报告](server-deployment-2026-10-04.md)。2026-10-05 已完成 Linux 原生与 Pixel 独立验收包的真实双端隔离同步，最终任务全部字段一致，revision 4、pending 0，见 [0.18.0 报告](release-0.18.0.md)。2026-10-07 增加了不暴露业务数据的 `/health/sync` 服务级检查；它只证明 SQLite schema 可读，不替代真实双设备同步验收。未将日常设备连接正式资料库，生产环境连续使用验收仍未执行。
 
 ## 范围与使用
 

@@ -66,6 +66,17 @@ class VaultStore:
         with self.lock, self.connect() as db:
             return self.row(db)
 
+    def health(self):
+        """Return schema readiness without exposing the vault id or records."""
+        with self.lock, self.connect() as db:
+            table = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vault'"
+            ).fetchone()
+            if table is None:
+                raise sqlite3.DatabaseError("vault schema is not ready")
+            db.execute("SELECT singleton FROM vault WHERE singleton=1").fetchone()
+        return {"ok": True, "service": "sync", "schemaVersion": 1}
+
     def put(self, value):
         encoded = validate_update(value)
         records = value["records"]
@@ -125,6 +136,12 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        if self.path == "/health":
+            try:
+                self.reply(200, self.server.store.health())
+            except (sqlite3.Error, ValueError):
+                self.reply(503, {"error": "storage_unavailable"})
+            return
         if not self.authorized():
             return
         try:

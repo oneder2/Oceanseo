@@ -46,6 +46,16 @@ class SyncServiceTest(unittest.TestCase):
         self.assertEqual(self.put(saved, {})[0], 400)
         self.assertEqual(VaultStore(self.db).get(), saved)
 
+    def test_health_does_not_require_or_return_vault_credentials(self):
+        conn = http.client.HTTPConnection(*self.server.server_address, timeout=5)
+        conn.request("GET", "/health")
+        response = conn.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
+        value = json.loads(response.read())
+        conn.close()
+        self.assertEqual(value, {"ok": True, "service": "sync", "schemaVersion": 1})
+
     def test_stale_device_and_retry(self):
         _, old = self.request()
         _, saved = self.put(old, {KEY: {"title": "手机"}})

@@ -44,6 +44,26 @@ oceanseo.gellaronline.cc {
 			}
 		}
 	}
+	handle /health/accounts {
+		rewrite * /v2/health
+		reverse_proxy 127.0.0.1:4791 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 10s
+				max_conns_per_host 4
+			}
+		}
+	}
+	handle /health/sync {
+		rewrite * /health
+		reverse_proxy 127.0.0.1:4789 {
+			transport http {
+				dial_timeout 3s
+				response_header_timeout 10s
+				max_conns_per_host 4
+			}
+		}
+	}
 	handle /health {
 		respond "ok" 200
 	}
