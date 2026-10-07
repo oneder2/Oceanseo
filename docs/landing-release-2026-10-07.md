@@ -21,3 +21,17 @@
 - GitHub Actions Release readiness：run `37563196707`，结果为 success。
 
 本记录不代表已经生成正式签名 Android APK/AAB；正式 keystore、异地备份和真机解锁验收仍是内测发布门槛。
+
+## Android 候选构建（未发布）
+
+2026-10-07 本机运行 `npm run android:doctor` 与 `npm run android:build` 成功。候选 APK 位于：
+
+`src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`
+
+- 包名：`com.tideplan.mobile.debug`
+- 版本：`0.18.0-internal`，versionCode `1800`
+- 架构：ARM64；16 KB ZIP 对齐通过
+- 调试证书 SHA-256：`bf0f8fba77581487229bcf6a6507c2a88c8629a605f147d64f3c591f51529630`
+- 本次候选 SHA-256：`5919b73715a47702266764c9986c84c8dc0cd7b66e6e0245f54e6f03a29ab60c`
+
+现有公网 0.18.0 APK 的 SHA-256 为 `37f013e8da37afaee137b14fbf15651647e492b4d31c5bbdf97a7347c6b12adf`。交付脚本因此拒绝用同版本不同字节的候选覆盖公网文件；候选仍需解锁真机验收并经明确批准后才能进入新的发布版本。
