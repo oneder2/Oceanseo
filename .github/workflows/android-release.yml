@@ -26,6 +26,10 @@ jobs:
           targets: aarch64-linux-android
       - run: npm ci
       - run: npm test
+      - run: npm run test:backup-audit
+      - run: npm run test:sync-server
+      - run: npm run test:accounts-server
+      - run: npm run test:release-contract
       - run: npm run build
       - name: Build signed APK and AAB
         env:
@@ -58,6 +62,10 @@ jobs:
             esac
             cp "$artifact" release-artifacts/
           done
+          apk="$(find src-tauri/gen/android/app/build/outputs -type f -name '*.apk' | sort | head -n 1)"
+          aab="$(find src-tauri/gen/android/app/build/outputs -type f -name '*.aab' | sort | head -n 1)"
+          test -n "$apk" && test -n "$aab"
+          node scripts/android-release-verify.mjs "$apk" "$aab" release-artifacts/release-metadata.json
           sha256sum release-artifacts/* > release-artifacts/SHA256SUMS
           cat release-artifacts/SHA256SUMS
       - uses: actions/upload-artifact@v4

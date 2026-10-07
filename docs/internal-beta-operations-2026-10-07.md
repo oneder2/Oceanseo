@@ -10,6 +10,7 @@
 - 审计每套备份的目录和文件私有权限、最新备份新鲜度（默认 30 小时）、SQLite `integrity_check` 和所需 schema。
 - 为个人同步和邀请制账号分别增加 systemd oneshot service/timer。
 - 健康端点现在会读取审计 service 的私有状态标记；标记缺失、失败或超过 30 小时，`/health/sync` 或 `/health/accounts` 返回 503，便于外部监控发现备份故障。
+- Android 签名候选 workflow 增加稳定包名、版本、证书摘要和 AAB 签名校验，并上传 `release-metadata.json`。
 - 首次安装脚本和增量部署脚本均会安装并启用审计 timer；增量部署保留原文件和 systemd 单元回滚副本。
 - 本机备份审计测试 5 项通过，核心测试 98 项通过，同步服务 7 项通过，账号服务 20 项通过，生产构建和 release contract 通过。
 - 已部署到 `oceanseo.gellaronline.cc`。两个审计 service 均实际退出 `0/SUCCESS`，两个 timer 为 `active`。

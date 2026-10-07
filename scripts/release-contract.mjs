@@ -15,6 +15,7 @@ const files = {
   accountsAuditTimer: "services/deployment/oceanseo-accounts-backup-audit.timer",
   syncServer: "services/sync/server.py",
   accountsServer: "services/accounts/store.py",
+  androidReleaseVerify: "scripts/android-release-verify.mjs",
 };
 const source = Object.fromEntries(await Promise.all(
   Object.entries(files).map(async ([key, file]) => [key, await readFile(file, "utf8")]),
@@ -43,6 +44,10 @@ assert.match(source.accountsServer, /backup_status/);
 assert.match(source.accountsServer, /30 \* 3600/);
 assert.match(source.ci, /npm run test:sync-server/);
 assert.match(source.ci, /npm run test:accounts-server/);
+assert.match(source.androidRelease, /android-release-verify\.mjs/);
+assert.match(source.androidReleaseVerify, /com\.tideplan\.mobile/);
+assert.match(source.androidReleaseVerify, /jarsigner/);
+assert.match(source.androidReleaseVerify, /certificateSha256/);
 
 const report = {
   contract: "internal-beta-release",
