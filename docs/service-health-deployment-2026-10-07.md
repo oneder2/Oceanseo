@@ -22,6 +22,8 @@
 
 远端 `oceanseo-accounts`、`tideplan-sync`、`tideplan-monitor`、`caddy` 均为 active；账号和同步备份 timer 仍启用。部署脚本在远端保存了代码/Caddyfile 回滚副本，最终成功目录为 `/var/backups/oceanseo-services-20261007T001850Z/`。
 
+随后手动触发 `tideplan-sync-backup.service` 与 `oceanseo-accounts-backup.service`，两者均为 `Result=success`、`ExecMainStatus=0`。新副本分别为 `vault-20261007T004114Z.sqlite3`（8192 bytes）和 `accounts-20261007T004114Z.sqlite3`（61440 bytes），权限均为 `0600`；以只读连接执行 `PRAGMA integrity_check` 均返回 `ok`。这证明了备份作业实际可执行，但仍不等于已经完成异地备份或灾难恢复演练。
+
 本轮没有创建账号、写入 vault、使用邀请码、修改环境文件或替换公开 APK/DEB。第一次尝试因服务启动竞态回滚，修正有界启动等待后重新部署成功。
 
 ## 边界
