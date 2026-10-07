@@ -20,13 +20,13 @@
 - 未携带凭据访问 `/v2/me`、`/v1/vault`、`/metrics`：均为 HTTP 401。
 - 不跟随重定向，TLS 使用系统证书校验。
 
-远端 `oceanseo-accounts`、`tideplan-sync`、`tideplan-monitor`、`caddy` 均为 active；账号和同步备份 timer 仍启用。部署脚本在远端保存了代码/Caddyfile 回滚副本，最终成功目录为 `/var/backups/oceanseo-services-20261007T001850Z/`。
+远端 `oceanseo-accounts`、`tideplan-sync`、`tideplan-monitor`、`caddy` 均为 active；账号和同步备份 timer 仍启用。部署脚本在远端保存了代码/Caddyfile 回滚副本；本次告警钩子部署的最终成功目录为 `/var/backups/oceanseo-services-20261007T032636Z/`。
 
 随后手动触发 `tideplan-sync-backup.service` 与 `oceanseo-accounts-backup.service`，两者均为 `Result=success`、`ExecMainStatus=0`。新副本分别为 `vault-20261007T004114Z.sqlite3`（8192 bytes）和 `accounts-20261007T004114Z.sqlite3`（61440 bytes），权限均为 `0600`；以只读连接执行 `PRAGMA integrity_check` 均返回 `ok`。这证明了备份作业实际可执行，但仍不等于已经完成异地备份或灾难恢复演练。
 
 随后将这两个副本恢复到隔离的临时目录，检查 `vault`、`users`、`vaults`、`invites`、`sessions`、`auth_limits` 表和完整性结果均通过（恢复文件权限 `0600`），演练结束后临时目录已删除。该演练没有覆盖在线数据库，也没有把副本复制到异地存储。
 
-本轮没有创建账号、写入 vault、使用邀请码、修改环境文件或替换公开 APK/DEB。第一次尝试因服务启动竞态回滚，修正有界启动等待后重新部署成功。
+本轮没有创建账号、写入 vault、使用邀请码、修改环境文件或替换公开 APK/DEB。03:19 UTC 的第一次告警钩子部署因服务重启后的审计启动竞态回滚，未造成数据写入；随后部署脚本增加回环健康等待、审计重试和回滚后审计恢复，于 03:26 UTC 成功完成。`/opt/oceanseo-alert/backup-alert.py` 和 `oceanseo-backup-alert@.service` 已安装，但 `/etc/oceanseo-alert.env` 尚不存在，因此外部告警仍保持关闭。
 
 ## 边界
 
