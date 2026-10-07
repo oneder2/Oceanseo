@@ -8,6 +8,7 @@
     "test:ui-quality": "node scripts/ui-quality-runner.mjs",
     "test:bundle": "node scripts/bundle-budget.mjs",
     "test:calendar-performance": "node scripts/calendar-performance.mjs",
+    "test:diagnostic-contract": "node scripts/diagnostic-contract.mjs",
     "test:release-contract": "node scripts/release-contract.mjs",
     "test:sync-server": "cd services/sync && python3 -m unittest -v test_server",
     "test:accounts-server": "python3 -m unittest -v services.accounts.test_server services.accounts.test_deployment",

@@ -29,6 +29,7 @@ jobs:
       - run: npm run test:backup-audit
       - run: npm run test:sync-server
       - run: npm run test:accounts-server
+      - run: npm run test:diagnostic-contract
       - run: npm run test:release-contract
       - run: npm run build
       - name: Build signed APK and AAB

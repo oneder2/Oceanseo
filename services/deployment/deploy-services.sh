@@ -44,10 +44,22 @@ if sudo test -e /etc/systemd/system/oceanseo-accounts-backup-audit.timer; then s
 sudo cp -a /etc/caddy/Caddyfile "$backup/Caddyfile"
 
 rollback_needed=true
+wait_for_port() {
+  local host="$1"
+  local port="$2"
+  for _ in $(seq 1 40); do
+    if timeout 2 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
 rollback() {
   set +e
-  if ! sudo test -e "$backup/tideplan-backup-audit.timer"; then sudo systemctl disable --now tideplan-backup-audit.timer; fi
-  if ! sudo test -e "$backup/oceanseo-accounts-backup-audit.timer"; then sudo systemctl disable --now oceanseo-accounts-backup-audit.timer; fi
+  sudo systemctl stop tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer || true
+  if ! sudo test -e "$backup/tideplan-backup-audit.timer"; then sudo systemctl disable tideplan-backup-audit.timer; fi
+  if ! sudo test -e "$backup/oceanseo-accounts-backup-audit.timer"; then sudo systemctl disable oceanseo-accounts-backup-audit.timer; fi
   sudo install -m 644 "$backup/accounts/store.py" /opt/oceanseo-accounts/services/accounts/store.py
   sudo install -m 644 "$backup/accounts/server.py" /opt/oceanseo-accounts/services/accounts/server.py
   sudo install -m 644 "$backup/sync/server.py" /opt/tideplan-sync/server.py
@@ -62,15 +74,16 @@ rollback() {
   sudo install -o root -g caddy -m 640 "$backup/Caddyfile" /etc/caddy/Caddyfile
   sudo systemctl daemon-reload
   sudo systemctl restart oceanseo-accounts tideplan-sync
-  for _ in $(seq 1 20); do
-    if curl --fail --silent --show-error --max-time 2 http://127.0.0.1:4791/v2/health >/dev/null \
-      && curl --fail --silent --show-error --max-time 2 http://127.0.0.1:4789/health >/dev/null; then
-      sudo systemctl reset-failed tideplan-backup-audit.service oceanseo-accounts-backup-audit.service
-      sudo systemctl start tideplan-backup-audit.service oceanseo-accounts-backup-audit.service
-      break
-    fi
-    sleep 0.5
+  wait_for_port 127.0.0.1 4791
+  wait_for_port 127.0.0.1 4789
+  for unit in tideplan-backup-audit.service oceanseo-accounts-backup-audit.service; do
+    sudo systemctl reset-failed "$unit"
+    for _ in $(seq 1 10); do
+      if sudo systemctl start "$unit"; then break; fi
+      sleep 1
+    done
   done
+  sudo systemctl start tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer
   sudo systemctl reload caddy
 }
 cleanup() {
@@ -96,8 +109,9 @@ sudo install -o root -g caddy -m 640 "$stage/services/deployment/Caddyfile" /etc
 if ! sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
   exit 1
 fi
-sudo systemctl restart oceanseo-accounts tideplan-sync
+sudo systemctl stop tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer || true
 sudo systemctl daemon-reload
+sudo systemctl restart oceanseo-accounts tideplan-sync
 wait_for() {
   for _ in $(seq 1 20); do
     if "$@" >/dev/null; then
@@ -107,8 +121,8 @@ wait_for() {
   done
   return 1
 }
-wait_for curl --fail --silent --show-error --max-time 2 http://127.0.0.1:4791/v2/health
-wait_for curl --fail --silent --show-error --max-time 2 http://127.0.0.1:4789/health
+wait_for_port 127.0.0.1 4791
+wait_for_port 127.0.0.1 4789
 sudo systemctl enable tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer
 start_audit() {
   local unit="$1"

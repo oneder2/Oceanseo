@@ -83,6 +83,7 @@ import "./life/life.css";
 import "./release.css";
 import { getAiSettings, saveAiSettings, testAiConnection } from "./aiSettingsStore";
 import type { AiSettings } from "./aiSettingsStore";
+import { exportDiagnosticReport } from "./diagnosticReport";
 import { APP_STATE_KEYS, bootstrapAppData, persistAppState } from "./appDataStore";
 import { exportDataBackup, restoreDataBackup, selectDataBackup } from "./backupStore";
 import type { DataBackup } from "./backupStore";
@@ -306,6 +307,7 @@ export default function App() {
   const [workOverview, setWorkOverview] = useState<WorkDashboard | null>(null);
   const [appVersion, setAppVersion] = useState(FALLBACK_APP_VERSION);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
   const [pendingBackup, setPendingBackup] = useState<DataBackup | null>(null);
   const [backupError, setBackupError] = useState("");
   const [toast, setToast] = useState("");
@@ -829,6 +831,40 @@ export default function App() {
       setBackupError("备份未导出，请先确认顶部保存状态，再检查保存位置和磁盘空间");
     } finally {
       setBackupBusy(false);
+    }
+  }
+
+  async function handleExportDiagnostics() {
+    if (diagnosticBusy) return;
+    setDiagnosticBusy(true);
+    try {
+      const exported = await exportDiagnosticReport({
+        appVersion,
+        platform: platform.name,
+        view,
+        userAgent: navigator.userAgent,
+        aiConfigured: Boolean(aiSettings?.apiKeyConfigured),
+        aiModel,
+        aiBaseUrl,
+        automaticSyncState: automaticSync.status.state,
+        automaticSyncMessage: automaticSync.status.message,
+        reminderEnabled: reminderSettings.enabled,
+        reminderTimes: reminderSettings.times,
+        counts: {
+          tasks: tasks.length,
+          completedTasks: tasks.filter((task) => Boolean(task.completedAt)).length,
+          countdowns: countdowns.length,
+          purchaseItems: allPurchaseItems.length,
+          people: life.people.length,
+          trainingPlans: life.training.length,
+          trips: life.trips.length,
+        },
+      });
+      if (exported) setToast("脱敏诊断已保存");
+    } catch {
+      setToast("诊断未导出，请检查保存位置和磁盘空间");
+    } finally {
+      setDiagnosticBusy(false);
     }
   }
 
@@ -1511,6 +1547,18 @@ export default function App() {
             </section>
             <MapSettings />
             <details className="technical-sync"><summary>同步诊断与兼容连接</summary><SyncSettings onBusy={setSyncBusy} automatic={automaticSync} /></details>
+            <section className="diagnostic-section" aria-label="内测诊断">
+              <header>
+                <span className="setting-icon"><Search size={18} /></span>
+                <div>
+                  <strong>内测诊断</strong>
+                  <p>仅在问题需要定位时导出。报告不含任务正文、个人资料、API_KEY、Token 或密码。</p>
+                </div>
+              </header>
+              <button className="secondary-button" type="button" onClick={() => void handleExportDiagnostics()} disabled={diagnosticBusy || !isTauri()}>
+                <Download size={15} />{diagnosticBusy ? "正在准备…" : "导出脱敏诊断"}
+              </button>
+            </section>
             </details>
             <section className="data-backup-section" aria-label="数据备份与恢复">
               <header>

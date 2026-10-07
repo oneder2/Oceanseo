@@ -17,6 +17,7 @@
 - 已部署到 `oceanseo.gellaronline.cc`。两个审计 service 均实际退出 `0/SUCCESS`，两个 timer 为 `active`。
 - 线上 HTTPS、账号健康、同步健康和未授权边界复核通过；最新两套备份的完整性均为 `ok`，备份文件权限为私有模式。
 - 备份审计 service 增加了默认关闭的 `oceanseo-backup-alert@.service` 失败钩子；它只向用户配置的 HTTPS webhook 发送组件、时间和固定事件名，不发送路径、数据库内容、令牌或异常正文。
+- 高级设置新增“导出脱敏诊断”，仅写出版本、平台、功能状态和数量统计；不读取或导出任务正文、人物资料、API_KEY、同步 Token、密码或采购文本。`npm run test:diagnostic-contract` 将其隐私边界纳入 CI。
 
 ## 运维边界
 

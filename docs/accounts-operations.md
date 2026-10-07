@@ -67,4 +67,4 @@ sudo ls -l /var/backups/oceanseo-accounts
 
 本地回归：`npm run test:accounts-server` 包含账号服务 17 项和部署验证 2 项，检查既有账号不会被合成账号清理影响。
 
-服务更新使用 `services/deployment/deploy-services.sh`。脚本只上传服务代码和 Caddyfile，拒绝携带环境文件、邀请码、数据库或密钥；先保存远端代码副本，等待两个回环健康端点就绪，再校验 Caddy 并 reload。任一健康检查失败会恢复代码与配置，不会自动修改业务数据库。
+服务更新使用 `services/deployment/deploy-services.sh`。脚本只上传服务代码和 Caddyfile，拒绝携带环境文件、邀请码、数据库或密钥；部署期间先暂停审计 timer，保存远端代码副本并等待两个回环端口监听，再运行审计、恢复 timer，最后校验 Caddy 并 reload。任一健康检查失败会恢复代码与配置，不会自动修改业务数据库。

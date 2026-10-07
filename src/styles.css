@@ -2348,6 +2348,37 @@ button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
+.diagnostic-section {
+  margin: 0 24px 19px;
+  padding: 16px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.diagnostic-section > header {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.diagnostic-section > header strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.diagnostic-section > header p {
+  margin: 0;
+  color: #777c75;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.diagnostic-section .secondary-button {
+  min-height: 36px;
+}
+
 .data-backup-section > header {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr) auto;

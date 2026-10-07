@@ -10,6 +10,8 @@
 - 发布域名：`https://oceanseo.gellaronline.cc/`
 - Git 提交：`1ee554e docs: clarify account deletion privacy flow`
 
+本轮内测收口再次执行 `landing:build` 与部署脚本，活动目录更新为 `/var/www/oceanseo/releases/web-20261007T034847Z`。脚本重新核对既有 0.18.0 安装包散列，未替换 APK/DEB；本次只更新静态站点产物并验证线上边界。
+
 部署脚本重新校验了既有安装包的 SHA-256，并在 Caddy 校验通过后原子切换活动目录；没有上传源代码、配置文件或密钥。
 
 ## 验收
