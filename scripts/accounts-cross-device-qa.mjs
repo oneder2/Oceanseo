@@ -1,14 +1,17 @@
 // One real account service and vault shared by isolated Linux and Pixel clients.
-// Only .uiuxqa is touched. Offline tests remove this harness's reverse route.
+// Personal cross-device regression uses an isolated .uiuxqa installation.
+// Offline tests remove only this harness's reverse route.
 import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { promisify, isDeepStrictEqual } from "node:util";
-import { mkdtemp, mkdir, copyFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, writeFile, readFile } from "node:fs/promises";
 import net from "node:net";
+import crypto from "node:crypto";
 
 const execute = promisify(execFile);
 const [driverPath, serial] = process.argv.slice(2);
 const quick = process.argv.includes("--quick");
+const option = name => process.argv[process.argv.indexOf(name) + 1];
 assert.ok(driverPath && serial, "Supply WebKitWebDriver path and unlocked Android serial");
 const pkg = "com.tideplan.mobile.uiuxqa";
 const wrapper = "/home/gellar/.codex/skills/playwright/scripts/playwright_cli.sh";
@@ -17,7 +20,8 @@ const binary = `${root}/app/tideplan`;
 const password = "Synthetic-shared-account-123!";
 const cliSession = `accounts-joint-${process.pid}`;
 const evidence = { actualNativeLinux: true, actualAndroid: true, actualHttp: true,
-  actualPhysicalPhone: !serial.startsWith("emulator-"), sharedAccountService: true, actualAIRequest: false, package: pkg, device: serial, root, gates: [] };
+  actualPhysicalPhone: !serial.startsWith("emulator-"), sharedAccountService: true, actualAIRequest: false,
+  serviceIsLocalSynthetic: true, package: pkg, device: serial, root, gates: [] };
 const log = stage => console.log(JSON.stringify({ stage }));
 const adb = async (...args) => (await execute("adb", ["-s", serial, ...args], { timeout: 60000 })).stdout.trim();
 const cli = async (...args) => (await execute("bash", [wrapper, `-s=${cliSession}`, ...args], {
@@ -33,15 +37,16 @@ async function freePort() {
     const port = probe.address().port; probe.close(() => resolve(port));
   }); });
 }
-await mkdir(`${root}/app`); await copyFile("src-tauri/target/debug/tideplan", binary);
+await mkdir(`${root}/app`);
+await copyFile("src-tauri/target/debug/tideplan", binary);
 for (const name of ["data", "config", "cache"]) await mkdir(`${root}/${name}`, { mode: 0o700 });
 const driverPort = await freePort(), forwardPort = await freePort();
 const driverUrl = `http://127.0.0.1:${driverPort}`;
-let service, driver, session, setup, endpoint, originalTasks, originalAi, originalKey;
+let service, driver, bus, session, setup, endpoint, originalTasks, originalAi, originalKey, originalBackup;
 let reverseOwned = false, forwardOwned = false;
 const elementKey = "element-6066-11e4-a52e-4f735466cecf";
 async function request(route, body, method = "POST") {
-  const response = await fetch(driverUrl + route, { method, signal: AbortSignal.timeout(25000),
+  const response = await fetch(driverUrl + route, { method, signal: AbortSignal.timeout(route === "/session" ? 90000 : 25000),
     headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const result = await response.json();
   assert.ok(response.ok && !result.value?.error, result.value?.error ?? "WebDriver failed");
@@ -139,13 +144,13 @@ async function attachPhone(key) {
 }
 async function switchLinux(key) {
   const previous = await ownPids();
-  await linux.click(".account-confirm button", "确认切换").catch(() => {});
+  await linux.click(".account-confirm button", "保存并切换");
   await wait(async () => { const next = await ownPids(); return next.length === 1 && next[0] !== previous[0]; }, "Linux restart failed");
   await stopLinux(); await openLinux(key);
 }
 async function switchPhone(key) {
   const previous = await phonePid();
-  await phone.ui("await page.locator('.account-confirm').getByRole('button',{name:'确认切换',exact:true}).click();").catch(() => {});
+  await phone.ui("await page.locator('.account-confirm').getByRole('button',{name:'保存并切换',exact:true}).click();").catch(() => {});
   await wait(async () => { const next = await phonePid(); return next && next !== previous; }, "Android restart failed");
   await attachPhone(key);
 }
@@ -247,16 +252,26 @@ async function goalsConverge(expected) {
     && isDeepStrictEqual(normalizedGoals(await phone.invoke("get_goal_state")), expected), "Goal and conversation snapshots differ", 120000);
 }
 
+// Uses the ordinary frontend scheduler, never invokes preview/commit sync.
+// Fixture seeding is native IPC; physical progress input is Android input tap.
+
 try {
   service = spawn("python3", ["-u", "-c", "import os,json; from services.accounts.server import create_server; s=create_server(('127.0.0.1',0),os.environ['TEST_ACCOUNTS_DB']); print(json.dumps({'port':s.server_port,'alice':s.store.create_invite(),'bob':s.store.create_invite()}),flush=True); s.serve_forever()"], {
-    env: { ...process.env, TEST_ACCOUNTS_DB: `${root}/accounts.sqlite3` }, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, TEST_ACCOUNTS_DB: `${root}/accounts.sqlite3`, TEST_CONTROL_DB: `${root}/control.sqlite3`, TEST_PERSONAL: "1" }, stdio: ["ignore", "pipe", "pipe"],
   });
   setup = await new Promise((resolve, reject) => {
     let raw = ""; service.stdout.on("data", chunk => { raw += chunk; if (raw.includes("\n")) { try { resolve(JSON.parse(raw.split("\n")[0])); } catch (e) { reject(e); } } });
     service.once("error", reject); service.once("exit", () => reject(Error("Temporary service exited")));
   });
   endpoint = `http://127.0.0.1:${setup.port}`;
-  driver = spawn(driverPath, [`--port=${driverPort}`], { env: { ...process.env, XDG_DATA_HOME: `${root}/data`, XDG_CONFIG_HOME: `${root}/config`, XDG_CACHE_HOME: `${root}/cache`, TAURI_WEBVIEW_AUTOMATION: "true", APPIMAGE: "/usr/bin/false", APPDIR: `${root}/cache` }, stdio: ["ignore", "ignore", "pipe"] });
+  bus = spawn("dbus-daemon", ["--session", "--nofork", "--print-address=1"], { stdio: ["ignore", "pipe", "ignore"] });
+  const busAddress = await new Promise((resolve, reject) => {
+    let raw = "";
+    bus.stdout.on("data", chunk => { raw += chunk; if (raw.includes("\n")) resolve(raw.split("\n")[0]); });
+    bus.once("error", reject);
+    bus.once("exit", () => reject(Error("Private D-Bus exited")));
+  });
+  driver = spawn(driverPath, [`--port=${driverPort}`], { env: { ...process.env, DBUS_SESSION_BUS_ADDRESS: busAddress, XDG_DATA_HOME: `${root}/data`, XDG_CONFIG_HOME: `${root}/config`, XDG_CACHE_HOME: `${root}/cache`, TAURI_WEBVIEW_AUTOMATION: "true", APPIMAGE: "/usr/bin/false", APPDIR: `${root}/cache` }, stdio: ["ignore", "ignore", "pipe"] });
   await wait(async () => { try { return (await fetch(driverUrl + "/status")).ok; } catch { return false; } }, "Driver not ready");
   await openLinux("local");
   await offline(false); await adb("shell", "am", "start", "-n", `${pkg}/com.tideplan.mobile.MainActivity`); await attachPhone("local");
@@ -386,6 +401,11 @@ try {
         await switchPhone(originalKey);
       }
       assert.deepEqual(await phone.invoke("list_tasks"), originalTasks); assert.deepEqual(await phone.invoke("get_ai_settings"), originalAi);
+      if (originalBackup) {
+        const retained = await phone.invoke("export_data_backup");
+        assert.deepEqual(retained.appState, originalBackup.appState);
+        assert.deepEqual(retained.settings, originalBackup.settings);
+      }
       cleanup.push("Android client restored to original local profile; tasks and AI unchanged");
     } catch (e) { cleanup.push(`Pixel cleanup FAILED: ${e}`); evidence.passed = false; }
   }
@@ -393,7 +413,7 @@ try {
   if (reverseOwned) await adb("reverse", "--remove", `tcp:${setup.port}`);
   if (forwardOwned) await adb("forward", "--remove", `tcp:${forwardPort}`);
   await stopLinux().catch(e => { cleanup.push(`Linux cleanup FAILED: ${e}`); evidence.passed = false; });
-  for (const child of [service, driver].filter(Boolean)) {
+  for (const child of [service, driver, bus].filter(Boolean)) {
     if (child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); await new Promise(resolve => child.once("exit", resolve)); }
   }
   evidence.cleanup = cleanup;

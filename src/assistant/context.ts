@@ -7,6 +7,8 @@ import { dateKey } from "../dateUtils";
 import { platform } from "../platform";
 import type { GoalState } from "../goals/model";
 import { infrastructureContext, type Infrastructure } from "../infrastructure/model";
+import { can, canView, projectLife } from "../modules/capabilities";
+import { viewCatalog, viewSupportsPlatform } from "../modules/catalog";
 
 export interface AssistantData {
   tasks: Task[];
@@ -28,11 +30,11 @@ export function makeContext(
   today = dateKey(),
 ) {
   const sections: Record<string, unknown> = {};
-  if (scopes.includes("infrastructure") && data.infrastructure) sections.infrastructure = infrastructureContext(data.infrastructure, today);
+  if (can("infrastructure") && scopes.includes("infrastructure") && data.infrastructure) sections.infrastructure = infrastructureContext(data.infrastructure, today);
   const end = addDays(today, 13),
     start = addDays(today, -13);
   const shorten = (v: string, max = 200) => v.slice(0, max);
-  if (scopes.includes("tasks")) {
+  if (can("tasks") && scopes.includes("tasks")) {
     const pending = data.tasks
       .filter((t) => !t.completedAt)
       .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"));
@@ -49,8 +51,8 @@ export function makeContext(
       completedAt: t.completedAt,
     });
     sections.tasks = {
-      goals: data.goals?.goals.slice(0,40).map(g=>({id:g.id,parentId:g.parentId,title:g.title,criterion:shorten(g.criterion,300),status:g.status,reviewDate:g.reviewDate})) ?? [],
-      actions: data.goals?.actions.slice(0,80).map(a=>({id:a.id,goalId:a.goalId,taskId:a.taskId,dependsOn:a.dependsOn,minutes:a.minutes,energy:a.energy,blocker:shorten(a.blocker),deferredUntil:a.deferredUntil,destination:a.destination})) ?? [],
+      goals: can("goals") ? data.goals?.goals.slice(0,40).map(g=>({id:g.id,parentId:g.parentId,title:g.title,criterion:shorten(g.criterion,300),status:g.status,reviewDate:g.reviewDate})) ?? [] : [],
+      actions: can("goals") ? data.goals?.actions.slice(0,80).map(a=>({id:a.id,goalId:a.goalId,taskId:a.taskId,dependsOn:a.dependsOn,minutes:a.minutes,energy:a.energy,blocker:shorten(a.blocker),deferredUntil:a.deferredUntil,destination:a.destination})) ?? [] : [],
       goalsTruncated: (data.goals?.goals.length??0)>40 || (data.goals?.actions.length??0)>80,
       pendingCount: pending.length,
       pending: pending.slice(0, 80).map(summarize),
@@ -59,8 +61,8 @@ export function makeContext(
       truncated: pending.length > 80 || recent.length > 30,
     };
   }
-  if (scopes.includes("calendar")) {
-    const events = lifeEvents(data.life).filter(
+  if (can("calendar") && scopes.includes("calendar")) {
+    const events = lifeEvents(projectLife(data.life)).filter(
       (e) => e.date >= today && e.date <= end,
     );
     sections.calendar = {
@@ -72,7 +74,7 @@ export function makeContext(
         kind: e.kind,
         completed: e.done ?? null,
       })),
-      keyDates: data.countdowns
+      keyDates: (can("countdowns") ? data.countdowns : [])
         .filter((c) => c.targetDate >= today)
         .sort((a, b) => a.targetDate.localeCompare(b.targetDate))
         .slice(0, 30)
@@ -80,9 +82,9 @@ export function makeContext(
       truncated: events.length > 80,
     };
   }
-  if (scopes.includes("meals"))
+  if ((can("meal-planner") || can("shopping-list")) && scopes.includes("meals"))
     sections.meals = {
-      plan: data.mealPlan
+      plan: can("meal-planner") && data.mealPlan
         ? {
             title: shorten(data.mealPlan.planTitle),
             days: data.mealPlan.days.slice(0, 7).map((d) => ({
@@ -93,7 +95,7 @@ export function makeContext(
             })),
           }
         : null,
-      shopping: data.purchases
+      shopping: (can("shopping-list") ? data.purchases : [])
         .filter((p) => !p.checked)
         .slice(0, 80)
         .map((p) => ({
@@ -101,9 +103,9 @@ export function makeContext(
           amount: shorten(p.amount, 80),
           category: shorten(p.category, 80),
         })),
-      pendingCount: data.purchases.filter((p) => !p.checked).length,
+      pendingCount: can("shopping-list") ? data.purchases.filter((p) => !p.checked).length : 0,
     };
-  if (scopes.includes("work"))
+  if (can("work-monitor") && scopes.includes("work"))
     sections.work = data.work
       ? {
           scannedAt: data.work.latestScan?.finishedAt ?? null,
@@ -122,7 +124,7 @@ export function makeContext(
   return {
     today,
     platform: platform.name,
-    unavailableViews: platform.mobile ? ["work-monitor", "bead-studio"] : [],
+    unavailableViews: (Object.keys(viewCatalog) as View[]).filter(view => !canView(view) || !viewSupportsPlatform(view, platform.name)),
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     currentView: data.view,
     sections,

@@ -11,7 +11,7 @@ parser.add_argument("--text")
 parser.add_argument("--class", dest="widget_class")
 parser.add_argument("--tap", action="store_true")
 args = parser.parse_args()
-assert args.serial == "58181JEBF13112" or args.serial == "emulator-5580"
+assert args.serial in {"58181JEBF13112", "emulator-5580", "emulator-5590"}
 adb = "/home/gellar/Android/Sdk/platform-tools/adb"
 
 def run(*command):
@@ -40,6 +40,7 @@ for node in root.iter("node"):
 assert matches, "Requested picker control not found"
 if args.tap:
     assert len(matches) == 1, "Picker target is ambiguous"
+    assert matches[0].get("enabled") == "true", "Picker target is disabled"
     coordinates = list(map(int, re.findall(r"\d+", matches[0]["bounds"])))
     run("shell", "input", "tap", str((coordinates[0] + coordinates[2]) // 2), str((coordinates[1] + coordinates[3]) // 2))
 for attributes in matches:

@@ -1,6 +1,7 @@
 // Each key is a durable outbox entry. A failed database write must never make
 // a subsequent startup replace the newer local value with an older snapshot.
 export const OUTBOX_PREFIX = "tideplan.outbox.v1:";
+import { mergeSharedData } from "./personal/sharedData";
 let revision = 0;
 function journalValue(raw: string) {
   const entry: unknown = JSON.parse(raw);
@@ -25,6 +26,7 @@ export class ReliableState {
     private storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
     private keys: string[],
     private write: (key: string, value: unknown) => Promise<void>,
+    private authorize?: (key: string, before: unknown, after: unknown) => void,
   ) {}
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -47,6 +49,16 @@ export class ReliableState {
     if (this.locked) throw Error("restore_in_progress");
     if (!this.keys.includes(key)) throw Error("state_key_invalid");
     if (value === undefined) throw Error("state_value_invalid");
+    const previous = this.storage.getItem(key);
+    this.authorize?.(key, previous === null ? undefined : JSON.parse(previous), value);
+    // Flushers may revisit an unchanged renderer snapshot. Do not enqueue it
+    // again: another native operation may have committed newer database data
+    // since the mirror was loaded. Pending/failed writes still retry normally.
+    const serialized = JSON.stringify(value);
+    if (previous === serialized && !this.storage.getItem(OUTBOX_PREFIX + key)
+      && !this.memory.has(key) && !this.localFailures.has(key)) {
+      return this.pending.get(key) ?? Promise.resolve();
+    }
     const raw = JSON.stringify({
       revision: `${Date.now()}:${++revision}`,
       value,
@@ -55,7 +67,7 @@ export class ReliableState {
     try {
       // Journal first: even a crash between these writes is recoverable.
       this.storage.setItem(OUTBOX_PREFIX + key, raw);
-      this.storage.setItem(key, JSON.stringify(value));
+      this.storage.setItem(key, serialized);
       this.localFailures.delete(key);
       this.memory.delete(key);
     } catch (e) {
@@ -120,7 +132,11 @@ export class ReliableState {
   }
   async recover(state: Record<string, unknown>) {
     for (const key of this.keys) {
-      const raw = this.storage.getItem(OUTBOX_PREFIX + key);
+      let raw = this.storage.getItem(OUTBOX_PREFIX + key);
+      if (raw !== null && JSON.parse(raw).sharedMigration === true && Object.hasOwn(state, key)) {
+        raw = JSON.stringify({ revision: `sharing:${Date.now()}`, value: mergeSharedData(state[key], journalValue(raw), true) });
+        this.storage.setItem(OUTBOX_PREFIX + key, raw);
+      }
       if (raw !== null)
         this.storage.setItem(key, JSON.stringify(journalValue(raw)));
       else if (Object.hasOwn(state, key))

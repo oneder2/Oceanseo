@@ -47,3 +47,11 @@ export function zoomCamera(
     ratio = cell / camera.cell;
   return { cell, x: x - (x - camera.x) * ratio, y: y - (y - camera.y) * ratio };
 }
+
+// Preserve the grid point under the original finger midpoint while both the
+// separation and midpoint move. Scaling always uses the gesture's start camera.
+export function pinchCamera(camera: Camera, distance: number, nextDistance: number,
+  center: { x: number; y: number }, nextCenter: { x: number; y: number }): Camera {
+  const zoomed = zoomCamera(camera, Math.max(1, nextDistance) / Math.max(1, distance), center.x, center.y);
+  return { ...zoomed, x: zoomed.x + nextCenter.x - center.x, y: zoomed.y + nextCenter.y - center.y };
+}

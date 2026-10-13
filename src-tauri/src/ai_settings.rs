@@ -31,7 +31,7 @@ pub struct ResolvedAiSettings {
     pub responses_url: Url,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredAiSettings {
     #[serde(default = "default_model")]
@@ -92,6 +92,7 @@ impl AiSettingsStore {
         Ok(summary_for(&settings))
     }
 
+    #[cfg(test)]
     pub fn save(
         &self,
         api_key: Option<String>,
@@ -99,13 +100,25 @@ impl AiSettingsStore {
         clear_api_key: bool,
         model: Option<String>,
     ) -> Result<AiSettingsSummary, String> {
-        let base_url = normalize_base_url(&base_url)?;
-        let mut settings = self
-            .settings
-            .write()
-            .map_err(|_| "ai_settings_lock_failed")?;
+        self.save_for_profile(api_key, base_url, clear_api_key, model, None)
+    }
 
-        let mut candidate = settings.clone();
+    fn save_for_profile(
+        &self,
+        api_key: Option<String>,
+        base_url: String,
+        clear_api_key: bool,
+        model: Option<String>,
+        profile: Option<&crate::profiles::ProfileRuntime>,
+    ) -> Result<AiSettingsSummary, String> {
+        let base_url = normalize_base_url(&base_url)?;
+        let previous = self
+            .settings
+            .read()
+            .map_err(|_| "ai_settings_lock_failed")?
+            .clone();
+
+        let mut candidate = previous.clone();
         if let Some(model) = model {
             let model = model.trim();
             if model.is_empty() || model.len() > 200 || model.chars().any(char::is_whitespace) {
@@ -123,9 +136,27 @@ impl AiSettingsStore {
             }
         }
         candidate.base_url = base_url;
-        persist_settings(&self.path, &candidate, &self.cipher)?;
-        *settings = candidate;
-        Ok(summary_for(&settings))
+        let encoded = self
+            .cipher
+            .encode(&serde_json::to_string(&candidate).map_err(|_| "ai_settings_write_failed")?)?;
+        // Android encryption waits for a main-thread Keystore callback. Do not
+        // hold the lock that synchronous settings reads need during that wait.
+        let mut settings = self
+            .settings
+            .write()
+            .map_err(|_| "ai_settings_lock_failed")?;
+        if *settings != previous {
+            return Err("ai_settings_changed_retry".into());
+        }
+        let commit = || {
+            persist_encoded(&self.path, &encoded)?;
+            *settings = candidate;
+            Ok(summary_for(&settings))
+        };
+        match profile {
+            Some(profile) => profile.while_current(commit),
+            None => commit(),
+        }
     }
 
     pub fn resolve(&self) -> Result<ResolvedAiSettings, String> {
@@ -206,17 +237,22 @@ fn summary_for(settings: &StoredAiSettings) -> AiSettingsSummary {
     }
 }
 
+#[cfg(target_os = "android")]
 fn persist_settings(
     path: &Path,
     settings: &StoredAiSettings,
     cipher: &CredentialCipher,
 ) -> Result<(), String> {
+    let serialized =
+        cipher.encode(&serde_json::to_string(settings).map_err(|_| "ai_settings_write_failed")?)?;
+    persist_encoded(path, &serialized)
+}
+
+fn persist_encoded(path: &Path, serialized: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|_| "ai_settings_write_failed")?;
     }
     let temporary_path = path.with_extension("json.tmp");
-    let serialized =
-        cipher.encode(&serde_json::to_string(settings).map_err(|_| "ai_settings_write_failed")?)?;
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]
@@ -248,8 +284,9 @@ pub async fn save_ai_settings(
     clear_api_key: bool,
     model: Option<String>,
     store: tauri::State<'_, AiSettingsStore>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
 ) -> Result<AiSettingsSummary, String> {
-    store.save(api_key, base_url, clear_api_key, model)
+    store.save_for_profile(api_key, base_url, clear_api_key, model, Some(&profile))
 }
 
 #[tauri::command]
@@ -454,5 +491,58 @@ mod tests {
             );
             server.join().unwrap();
         }
+    }
+    #[test]
+    fn queued_settings_save_does_not_write_after_profile_selection() {
+        use crate::capabilities::tests::{account, profile};
+        use std::sync::{mpsc, Arc};
+        let temp = tempfile::tempdir().unwrap();
+        let profile = profile(
+            &temp.path().join("client"),
+            &account("https://sync.example.com"),
+        );
+        let path = profile.data_dir.join("ai-settings.json");
+        let store = Arc::new(AiSettingsStore::open(&path).unwrap());
+        store
+            .save(
+                Some("original-fixture-key".into()),
+                DEFAULT_BASE_URL.into(),
+                false,
+                None,
+            )
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let guard = store.settings.write().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let queued = store.clone();
+        let queued_profile = profile.clone();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx
+                .send(queued.save_for_profile(
+                    Some("new-fixture-key".into()),
+                    DEFAULT_BASE_URL.into(),
+                    false,
+                    Some("new-model".into()),
+                    Some(&queued_profile),
+                ))
+                .unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(matches!(
+            done_rx.recv_timeout(std::time::Duration::from_millis(30)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        profile.select(crate::profiles::LOCAL).unwrap();
+        drop(guard);
+        assert!(done_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap()
+            .unwrap_err()
+            .contains("资料库即将切换"));
+        worker.join().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(store.resolve().unwrap().api_key, "original-fixture-key");
     }
 }

@@ -10,6 +10,7 @@ use std::{
     sync::RwLock,
     time::Duration,
 };
+use tauri::Manager;
 
 pub struct MapStore {
     path: PathBuf,
@@ -65,39 +66,64 @@ impl MapStore {
             }),
         })
     }
+    #[cfg(any(test, target_os = "android"))]
     fn save(&self, key: Option<String>, clear: bool) -> Result<MapSummary, String> {
-        let mut stored = self.key.write().map_err(|_| "地图配置正忙")?;
+        self.save_checked(key, clear, None)
+    }
+
+    fn save_checked(
+        &self,
+        key: Option<String>,
+        clear: bool,
+        authorization: Option<(
+            &crate::capabilities::CapabilityRuntime,
+            &crate::profiles::ProfileRuntime,
+        )>,
+    ) -> Result<MapSummary, String> {
+        let previous = self.key.read().map_err(|_| "地图配置正忙")?.clone();
         let next = if clear {
             String::new()
         } else {
             key.filter(|k| !k.trim().is_empty())
                 .map(|k| k.trim().to_string())
-                .unwrap_or_else(|| stored.clone())
+                .unwrap_or_else(|| previous.clone())
         };
         if next.len() > 512 || next.chars().any(char::is_whitespace) {
             return Err("地图 Key 格式无效".into());
         }
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|_| "无法创建地图配置目录")?;
+        let encoded = self
+            .cipher
+            .encode(&serde_json::to_string(&next).map_err(|_| "地图配置保存失败")?)?;
+        // Keystore callbacks must be able to run while the UI reads settings.
+        let mut stored = self.key.write().map_err(|_| "地图配置正忙")?;
+        if *stored != previous {
+            return Err("地图配置已更新，请重试".into());
         }
-        let temporary = self.path.with_extension("tmp");
-        let mut options = fs::OpenOptions::new();
-        options.create(true).write(true).truncate(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options.open(&temporary).map_err(|_| "地图配置保存失败")?;
-        #[cfg(unix)]
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-            .map_err(|_| "地图配置权限设置失败")?;
-        file.write_all(
-            self.cipher
-                .encode(&serde_json::to_string(&next).unwrap())?
-                .as_bytes(),
-        )
-        .and_then(|_| file.sync_all())
-        .map_err(|_| "地图配置保存失败")?;
-        fs::rename(temporary, &self.path).map_err(|_| "地图配置保存失败")?;
-        *stored = next;
+        let commit = || -> Result<(), String> {
+            if let Some(parent) = self.path.parent() {
+                fs::create_dir_all(parent).map_err(|_| "无法创建地图配置目录")?;
+            }
+            let temporary = self.path.with_extension("tmp");
+            let mut options = fs::OpenOptions::new();
+            options.create(true).write(true).truncate(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&temporary).map_err(|_| "地图配置保存失败")?;
+            #[cfg(unix)]
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+                .map_err(|_| "地图配置权限设置失败")?;
+            file.write_all(encoded.as_bytes())
+                .and_then(|_| file.sync_all())
+                .map_err(|_| "地图配置保存失败")?;
+            fs::rename(temporary, &self.path).map_err(|_| "地图配置保存失败")?;
+            *stored = next;
+            Ok(())
+        };
+        match authorization {
+            Some((_, profile)) if clear => profile.while_current(commit)?,
+            Some((policy, profile)) => policy.with_writes(profile, &["travel"], commit)?,
+            None => commit()?,
+        }
         drop(stored);
         self.summary()
     }
@@ -111,16 +137,46 @@ impl MapStore {
     }
 }
 #[tauri::command]
-pub fn get_map_settings(store: tauri::State<'_, MapStore>) -> Result<MapSummary, String> {
+pub fn get_map_settings(
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
+    store: tauri::State<'_, MapStore>,
+) -> Result<MapSummary, String> {
+    let personal = if let Some(scope) = &personal_scope {
+        crate::personal_workspaces::require_personal(&app)?;
+        Some(
+            app.state::<crate::personal_workspaces::PersonalRuntime>()
+                .map(scope, &app)?,
+        )
+    } else {
+        None
+    };
+    let store = personal.as_deref().unwrap_or(store.inner());
+
     store.summary()
 }
 #[tauri::command]
 pub async fn save_map_settings(
     key: Option<String>,
     clear: bool,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
     store: tauri::State<'_, MapStore>,
+    policy: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
 ) -> Result<MapSummary, String> {
-    store.save(key, clear)
+    let personal = if let Some(scope) = &personal_scope {
+        crate::personal_workspaces::require_personal(&app)?;
+        Some(
+            app.state::<crate::personal_workspaces::PersonalRuntime>()
+                .map(scope, &app)?,
+        )
+    } else {
+        None
+    };
+    let store = personal.as_deref().unwrap_or(store.inner());
+
+    store.save_checked(key, clear, Some((&policy, &profile)))
 }
 async fn request(
     path: &str,
@@ -167,8 +223,22 @@ fn coordinate(raw: &str) -> Option<(f64, f64)> {
 pub async fn search_places(
     query: String,
     city: String,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
     store: tauri::State<'_, MapStore>,
 ) -> Result<Vec<Place>, String> {
+    crate::personal_workspaces::check_scope(&app, &personal_scope, "travel")?;
+    let personal = if let Some(scope) = &personal_scope {
+        crate::personal_workspaces::require_personal(&app)?;
+        Some(
+            app.state::<crate::personal_workspaces::PersonalRuntime>()
+                .map(scope, &app)?,
+        )
+    } else {
+        None
+    };
+    let store = personal.as_deref().unwrap_or(store.inner());
+
     if query.trim().is_empty() || query.len() > 1000 || city.len() > 300 {
         return Err("请输入具体地点或地址".into());
     }
@@ -180,7 +250,7 @@ pub async fn search_places(
             ("offset", "8".into()),
             ("extensions", "base".into()),
         ],
-        &store,
+        store,
     )
     .await?;
     let mut places = Vec::new();
@@ -202,7 +272,7 @@ pub async fn search_places(
         }
     }
     if places.is_empty() {
-        let geo = request("geocode/geo", vec![("address", query.clone())], &store).await?;
+        let geo = request("geocode/geo", vec![("address", query.clone())], store).await?;
         if let Some(items) = geo["geocodes"].as_array() {
             for p in items {
                 if let Some((lng, lat)) = p["location"].as_str().and_then(coordinate) {
@@ -223,8 +293,22 @@ pub async fn plan_map_route(
     origin: [f64; 2],
     destination: [f64; 2],
     mode: String,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
     store: tauri::State<'_, MapStore>,
 ) -> Result<Value, String> {
+    crate::personal_workspaces::check_scope(&app, &personal_scope, "travel")?;
+    let personal = if let Some(scope) = &personal_scope {
+        crate::personal_workspaces::require_personal(&app)?;
+        Some(
+            app.state::<crate::personal_workspaces::PersonalRuntime>()
+                .map(scope, &app)?,
+        )
+    } else {
+        None
+    };
+    let store = personal.as_deref().unwrap_or(store.inner());
+
     for p in [origin, destination] {
         if !p[0].is_finite() || !p[1].is_finite() || p[0].abs() > 180. || p[1].abs() > 90. {
             return Err("地点坐标无效".into());
@@ -244,7 +328,7 @@ pub async fn plan_map_route(
                 format!("{},{}", destination[0], destination[1]),
             ),
         ],
-        &store,
+        store,
     )
     .await?;
     let path = body["route"]["paths"]
@@ -299,5 +383,64 @@ mod tests {
         assert!(coordinate("NaN,12").is_none());
         assert!(coordinate("181,12").is_none());
         assert_eq!(coordinate("116.4,39.9"), Some((116.4, 39.9)));
+    }
+    #[test]
+    fn queued_map_save_rechecks_revocation_and_preserves_original_key() {
+        use crate::capabilities::{
+            tests::{account, install_test_permissions, profile},
+            CapabilityRuntime,
+        };
+        use std::sync::{mpsc, Arc};
+        let temp = tempfile::tempdir().unwrap();
+        let profile = profile(
+            &temp.path().join("client"),
+            &account("https://sync.example.com"),
+        );
+        let policy = CapabilityRuntime::open(&profile).unwrap();
+        install_test_permissions(&policy, &profile, &[]);
+        let path = profile.data_dir.join("map-settings.json");
+        let store = Arc::new(MapStore::open(&path).unwrap());
+        store
+            .save(Some("original-fixture-key".into()), false)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let guard = store.key.write().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let queued = store.clone();
+        let queued_policy = policy.clone();
+        let queued_profile = profile.clone();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx
+                .send(queued.save_checked(
+                    Some("new-fixture-key".into()),
+                    false,
+                    Some((&queued_policy, &queued_profile)),
+                ))
+                .unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(30)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        install_test_permissions(&policy, &profile, &[("travel", "write")]);
+        drop(guard);
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .err()
+            .unwrap()
+            .contains("module_permission_denied:travel:write"));
+        worker.join().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(store.resolved().unwrap(), "original-fixture-key");
+        assert!(
+            !store
+                .save_checked(None, true, Some((&policy, &profile)))
+                .unwrap()
+                .configured
+        );
     }
 }

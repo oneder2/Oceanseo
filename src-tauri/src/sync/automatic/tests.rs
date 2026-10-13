@@ -51,6 +51,7 @@ impl Fixture {
             session_id: value["session"]["id"].as_str().unwrap().into(),
             expires_at: value["session"]["expiresAt"].as_i64().unwrap(),
             device_name: value["session"]["deviceName"].as_str().unwrap().into(),
+            workspace: None,
         }
     }
     fn client(&self, label: &str) -> Client {
@@ -105,6 +106,49 @@ async fn cycle(client: &Client) -> Receipt {
     )
     .await
     .unwrap()
+}
+
+#[tokio::test]
+async fn authorization_at_upload_and_local_commit_preserves_baseline_and_records() {
+    let fixture = Fixture::start();
+    let a = fixture.client("a");
+    a.store.create(mutation("本机原记录", "不得丢失")).unwrap();
+    let (preview, _) = prepare_preview(&a.runtime, &a.store).await.unwrap();
+    let before = a.store.sync_snapshot().unwrap();
+    for denied_check in [3, 4] {
+        let checks = std::cell::Cell::new(0);
+        let error =
+            commit_prepared_authorized(&a.runtime, &a.store, &preview, &BTreeMap::new(), || {
+                checks.set(checks.get() + 1);
+                if checks.get() == denied_check {
+                    Err(SyncFailure::new(
+                        FailureKind::Auth,
+                        "fixture_permission_revoked",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error.kind, FailureKind::Auth));
+        assert_eq!(error.message, "fixture_permission_revoked");
+        let after = a.store.sync_snapshot().unwrap();
+        assert_eq!(after.0, before.0);
+        assert_eq!(hash(&after.1), hash(&before.1));
+        let remote = request_checked(&a.runtime.config().unwrap(), None)
+            .await
+            .unwrap();
+        if denied_check == 3 {
+            assert!(remote.records.is_empty());
+        } else {
+            assert_eq!(remote.records, before.0);
+        }
+    }
+    // The server may have accepted the request; a fresh preview converges
+    // without overwriting local edits or pretending it was rolled back.
+    manual(&a, BTreeMap::new()).await;
+    assert_eq!(a.store.sync_snapshot().unwrap().0, before.0);
 }
 
 #[tokio::test]

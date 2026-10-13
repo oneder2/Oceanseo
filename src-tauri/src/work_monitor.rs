@@ -11,7 +11,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 use tauri::Manager;
@@ -190,9 +190,127 @@ pub struct WorkMonitorStore {
     connection: Mutex<Connection>,
     scan_lock: Mutex<()>,
     export_dir: PathBuf,
+    authorization: OnceLock<(
+        crate::capabilities::CapabilityRuntime,
+        crate::profiles::ProfileRuntime,
+    )>,
 }
 
 impl WorkMonitorStore {
+    pub(crate) fn clear_personal_history(&self) -> Result<(), String> {
+        let mut connection = self.connection.lock().map_err(|_| "工作历史存储忙碌")?;
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch("DELETE FROM work_sync_drafts; DELETE FROM work_reports; DELETE FROM work_scan_projects; DELETE FROM work_scans; DELETE FROM work_projects; DELETE FROM work_monitor_config;
+            INSERT INTO work_monitor_config VALUES(1,0,'','',0,'09:30',45,'[]',strftime('%Y-%m-%dT%H:%M:%fZ','now'));").map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+    pub(crate) fn restore_personal_archive(&self, archive: &Value) -> Result<(), String> {
+        use rusqlite::types::Value as SqlValue;
+        const TABLES: [(&str, &str); 6] = [
+            ("work_monitor_config", "config"),
+            ("work_projects", "projects"),
+            ("work_scans", "scans"),
+            ("work_scan_projects", "scanProjects"),
+            ("work_reports", "reports"),
+            ("work_sync_drafts", "drafts"),
+        ];
+        if archive["workArchiveVersion"] != 1 || !archive["tables"].is_object() {
+            return Err("工作历史备份无效".into());
+        }
+        let mut connection = self.connection.lock().map_err(|_| "工作历史存储忙碌")?;
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        for (table, _) in TABLES.iter().rev() {
+            tx.execute(&format!("DELETE FROM {table}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+        for (table, label) in TABLES {
+            let columns: Vec<String> = {
+                let statement = tx
+                    .prepare(&format!("SELECT * FROM {table} LIMIT 0"))
+                    .map_err(|e| e.to_string())?;
+                statement
+                    .column_names()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            };
+            let rows = archive["tables"][label]
+                .as_array()
+                .ok_or("工作历史缺少数据表")?;
+            if rows.len() > 100000 {
+                return Err("工作历史超出容量".into());
+            }
+            for row in rows {
+                let record = row.as_object().ok_or("工作历史记录无效")?;
+                if record.len() != columns.len()
+                    || columns.iter().any(|column| !record.contains_key(column))
+                {
+                    return Err("工作历史字段不兼容".into());
+                }
+                let values: Vec<SqlValue> = columns
+                    .iter()
+                    .map(|column| {
+                        let value = &record[column];
+                        if column.ends_with("_json") {
+                            Ok(SqlValue::Text(if let Some(raw) = value.as_str() {
+                                raw.into()
+                            } else {
+                                value.to_string()
+                            }))
+                        } else {
+                            match value {
+                                Value::Null => Ok(SqlValue::Null),
+                                Value::String(s) => Ok(SqlValue::Text(s.clone())),
+                                Value::Number(n) => n
+                                    .as_i64()
+                                    .map(SqlValue::Integer)
+                                    .or_else(|| n.as_f64().map(SqlValue::Real))
+                                    .ok_or("工作历史数字无效"),
+                                _ => Err("工作历史字段无效"),
+                            }
+                        }
+                    })
+                    .collect::<Result<_, _>>()?;
+                let placeholders = vec!["?"; columns.len()].join(",");
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {table}({}) VALUES({placeholders})",
+                        columns.join(",")
+                    ),
+                    rusqlite::params_from_iter(values),
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+    pub fn bind_authorization(
+        &self,
+        policy: crate::capabilities::CapabilityRuntime,
+        profile: crate::profiles::ProfileRuntime,
+    ) -> Result<(), String> {
+        self.authorization
+            .set((policy, profile))
+            .map_err(|_| "工作观察授权已绑定，不可替换".into())
+    }
+
+    fn with_permissions<T>(
+        &self,
+        actions: &[&str],
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        match self.authorization.get() {
+            Some((policy, profile)) => {
+                let permissions: Vec<_> = actions
+                    .iter()
+                    .map(|action| ("work-monitor", *action))
+                    .collect();
+                policy.with_permissions(profile, &permissions, operation)
+            }
+            None => operation(), // Standalone fixture stores; native setup always binds.
+        }
+    }
+
     pub fn open(database_path: &Path, export_dir: PathBuf) -> Result<Self, String> {
         let parent = database_path.parent().ok_or("work_monitor_path_invalid")?;
         fs::create_dir_all(parent).map_err(|_| "work_monitor_directory_failed")?;
@@ -208,6 +326,7 @@ impl WorkMonitorStore {
             connection: Mutex::new(connection),
             scan_lock: Mutex::new(()),
             export_dir,
+            authorization: OnceLock::new(),
         };
         store.migrate()?;
         Ok(store)
@@ -334,9 +453,14 @@ impl WorkMonitorStore {
 
     pub fn save_config(&self, config: WorkMonitorConfig) -> Result<WorkMonitorConfig, String> {
         validate_config(&config)?;
-        self.connection
+        let mut connection = self
+            .connection
             .lock()
-            .map_err(|_| "work_monitor_lock_failed".to_string())?
+            .map_err(|_| "work_monitor_lock_failed".to_string())?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "work_monitor_transaction_failed")?;
+        transaction
             .execute(
                 r#"
                 UPDATE work_monitor_config SET enabled = ?1, workspace_root = ?2,
@@ -357,10 +481,25 @@ impl WorkMonitorStore {
                 ],
             )
             .map_err(|_| "work_monitor_config_save_failed".to_string())?;
+        self.with_permissions(&["write"], || {
+            transaction
+                .commit()
+                .map_err(|_| "work_monitor_config_save_failed".to_string())
+        })?;
+        drop(connection);
         self.config()
     }
 
+    #[cfg(test)]
     pub fn scan(&self) -> Result<WorkDashboard, String> {
+        self.scan_authorized(|| Ok(()))
+    }
+
+    pub fn scan_authorized(
+        &self,
+        authorize: impl Fn() -> Result<(), String>,
+    ) -> Result<WorkDashboard, String> {
+        authorize()?;
         let _scan_guard = self
             .scan_lock
             .try_lock()
@@ -387,6 +526,7 @@ impl WorkMonitorStore {
         entries.sort_by_key(|entry| entry.file_name());
 
         for entry in entries.into_iter().take(100) {
+            authorize()?;
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') || excluded.contains(name.as_str()) {
                 continue;
@@ -401,6 +541,7 @@ impl WorkMonitorStore {
         }
 
         let finished_at = now_timestamp();
+        authorize()?;
         self.persist_scan(
             &scan_id,
             &started_at,
@@ -451,7 +592,7 @@ impl WorkMonitorStore {
             .lock()
             .map_err(|_| "work_monitor_lock_failed".to_string())?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| "work_scan_transaction_failed".to_string())?;
         let mut active_count = 0_u32;
         let mut significant_count = 0_u32;
@@ -543,9 +684,11 @@ impl WorkMonitorStore {
                 )
                 .map_err(|_| "work_scan_project_save_failed".to_string())?;
         }
-        transaction
-            .commit()
-            .map_err(|_| "work_scan_commit_failed".to_string())
+        self.with_permissions(&["write"], || {
+            transaction
+                .commit()
+                .map_err(|_| "work_scan_commit_failed".to_string())
+        })
     }
 
     pub fn dashboard(&self) -> Result<WorkDashboard, String> {
@@ -576,6 +719,83 @@ impl WorkMonitorStore {
             latest_report,
             drafts,
         })
+    }
+
+    /// Lossless own-profile archive, including history omitted by dashboard limits.
+    /// This is an export format, not a TaskStore restore payload.
+    pub fn archive(&self) -> Result<Value, String> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "work_monitor_lock_failed")?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| "work_archive_read_failed")?;
+        let mut tables = serde_json::Map::new();
+        for (table, label) in [
+            ("work_monitor_config", "config"),
+            ("work_projects", "projects"),
+            ("work_scans", "scans"),
+            ("work_scan_projects", "scanProjects"),
+            ("work_reports", "reports"),
+            ("work_sync_drafts", "drafts"),
+        ] {
+            // Identifiers are a fixed allowlist, never provided by IPC callers.
+            let mut statement = transaction
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .map_err(|_| "work_archive_read_failed")?;
+            let columns: Vec<String> = statement
+                .column_names()
+                .iter()
+                .map(|name| name.to_string())
+                .collect();
+            let records = statement
+                .query_map([], |row| {
+                    let mut record = serde_json::Map::new();
+                    for (index, name) in columns.iter().enumerate() {
+                        use rusqlite::types::ValueRef;
+                        let value = match row.get_ref(index)? {
+                            ValueRef::Null => Value::Null,
+                            ValueRef::Integer(value) => serde_json::json!(value),
+                            ValueRef::Real(value) => serde_json::json!(value),
+                            ValueRef::Text(value) => {
+                                let text = std::str::from_utf8(value).map_err(|error| {
+                                    rusqlite::Error::FromSqlConversionFailure(
+                                        index,
+                                        rusqlite::types::Type::Text,
+                                        Box::new(error),
+                                    )
+                                })?;
+                                if name.ends_with("_json") {
+                                    serde_json::from_str(text)
+                                        .unwrap_or_else(|_| Value::String(text.into()))
+                                } else {
+                                    Value::String(text.into())
+                                }
+                            }
+                            ValueRef::Blob(_) => {
+                                return Err(rusqlite::Error::InvalidColumnType(
+                                    index,
+                                    name.clone(),
+                                    rusqlite::types::Type::Blob,
+                                ))
+                            }
+                        };
+                        record.insert(name.clone(), value);
+                    }
+                    Ok(Value::Object(record))
+                })
+                .map_err(|_| "work_archive_read_failed")?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "work_archive_read_failed")?;
+            tables.insert(label.into(), Value::Array(records));
+        }
+        transaction
+            .commit()
+            .map_err(|_| "work_archive_read_failed")?;
+        Ok(
+            serde_json::json!({"workArchiveVersion":1, "createdAt":now_timestamp(), "tables":tables}),
+        )
     }
 
     pub fn is_due(&self) -> Result<bool, String> {
@@ -659,7 +879,7 @@ impl WorkMonitorStore {
             .lock()
             .map_err(|_| "work_monitor_lock_failed".to_string())?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| "work_analysis_transaction_failed")?;
         let report_id = transaction
             .query_row(
@@ -713,9 +933,11 @@ impl WorkMonitorStore {
                 serde_json::to_string(&evidence).unwrap_or_else(|_| "[]".to_string()), created_at
             ]).map_err(|_| "work_draft_save_failed")?;
         }
-        transaction
-            .commit()
-            .map_err(|_| "work_analysis_commit_failed")?;
+        self.with_permissions(&["write", "ai"], || {
+            transaction
+                .commit()
+                .map_err(|_| "work_analysis_commit_failed".to_string())
+        })?;
         drop(connection);
         self.dashboard()
     }
@@ -728,11 +950,14 @@ impl WorkMonitorStore {
         let (public_id, title) = target
             .map(|item| (Some(item.public_id.as_str()), Some(item.title.zh.as_str())))
             .unwrap_or((None, None));
-        let connection = self
+        let mut connection = self
             .connection
             .lock()
             .map_err(|_| "work_monitor_lock_failed".to_string())?;
-        let changed = connection
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "work_mapping_transaction_failed")?;
+        let changed = transaction
             .execute(
                 "UPDATE work_projects SET target_public_id = ?1, target_title = ?2 WHERE id = ?3",
                 params![public_id, title, project_id],
@@ -741,27 +966,51 @@ impl WorkMonitorStore {
         if changed != 1 {
             return Err("work_project_not_found".to_string());
         }
-        connection.execute(
+        transaction.execute(
             "UPDATE work_sync_drafts SET target_public_id = ?1, target_title = ?2 WHERE project_id = ?3 AND status = 'pending'",
             params![public_id, title, project_id]
         ).map_err(|_| "work_mapping_save_failed")?;
+        self.with_permissions(&["write"], || {
+            transaction
+                .commit()
+                .map_err(|_| "work_mapping_save_failed".to_string())
+        })?;
         drop(connection);
         self.dashboard()
     }
 
     pub fn reject_draft(&self, draft_id: &str) -> Result<WorkDashboard, String> {
-        let changed = self.connection.lock().map_err(|_| "work_monitor_lock_failed".to_string())?
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "work_monitor_lock_failed".to_string())?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "work_draft_transaction_failed")?;
+        let changed = transaction
             .execute("UPDATE work_sync_drafts SET status = 'rejected', sync_error = NULL WHERE id = ?1 AND status = 'pending'", [draft_id])
             .map_err(|_| "work_draft_reject_failed")?;
         if changed != 1 {
             return Err("work_draft_not_pending".to_string());
         }
+        self.with_permissions(&["write"], || {
+            transaction
+                .commit()
+                .map_err(|_| "work_draft_reject_failed".to_string())
+        })?;
+        drop(connection);
         self.dashboard()
     }
 
     pub fn catalog(&self) -> Result<Vec<GWorkspaceProject>, String> {
         let config = self.config()?;
-        let value = run_gworkspace_command(&config.gworkspace_root, &["catalog"])?;
+        let value = run_gworkspace_command(&config.gworkspace_root, &["catalog"], |command| {
+            self.with_permissions(&["read"], || {
+                command
+                    .spawn()
+                    .map_err(|_| "gworkspace_adapter_failed".into())
+            })
+        })?;
         let catalog: CatalogEnvelope =
             serde_json::from_value(value).map_err(|_| "gworkspace_catalog_invalid")?;
         if catalog.schema_version != "1.0.0" {
@@ -830,27 +1079,39 @@ impl WorkMonitorStore {
         let export_path = self
             .export_dir
             .join(format!("project-update-{draft_id}.json"));
-        fs::write(
-            &export_path,
-            serde_json::to_vec_pretty(&payload).map_err(|_| "work_sync_payload_invalid")?,
-        )
-        .map_err(|_| "work_sync_export_failed")?;
+        self.with_permissions(&["write"], || {
+            fs::write(
+                &export_path,
+                serde_json::to_vec_pretty(&payload).map_err(|_| "work_sync_payload_invalid")?,
+            )
+            .map_err(|_| "work_sync_export_failed".to_string())
+        })?;
         let sync_result = run_gworkspace_command(
             &config.gworkspace_root,
             &["import", export_path.to_string_lossy().as_ref()],
+            |command| {
+                self.with_permissions(&["write"], || {
+                    command
+                        .spawn()
+                        .map_err(|_| "gworkspace_adapter_failed".into())
+                })
+            },
         );
-        let connection = self
+        let mut connection = self
             .connection
             .lock()
             .map_err(|_| "work_monitor_lock_failed".to_string())?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "work_sync_receipt_transaction_failed")?;
         match sync_result {
             Ok(_) => {
                 let synced_at = now_timestamp();
-                connection.execute(
+                transaction.execute(
                     "UPDATE work_sync_drafts SET target_public_id = ?1, highlight_zh = ?2, highlight_en = ?3, status = 'synced', synced_at = ?4, sync_error = NULL WHERE id = ?5",
                     params![target_project_id, highlight_zh.trim(), highlight_en.trim(), synced_at, draft_id]
                 ).map_err(|_| "work_sync_receipt_save_failed")?;
-                connection
+                transaction
                     .execute(
                         "UPDATE work_projects SET target_public_id = ?1 WHERE id = ?2",
                         params![target_project_id, draft.1],
@@ -858,15 +1119,25 @@ impl WorkMonitorStore {
                     .map_err(|_| "work_mapping_save_failed")?;
             }
             Err(code) => {
-                connection
+                transaction
                     .execute(
                         "UPDATE work_sync_drafts SET sync_error = ?1 WHERE id = ?2",
                         params![code, draft_id],
                     )
                     .ok();
+                self.with_permissions(&["write"], || {
+                    transaction
+                        .commit()
+                        .map_err(|_| "work_sync_receipt_save_failed".to_string())
+                })?;
                 return Err("gworkspace_sync_failed".to_string());
             }
         }
+        self.with_permissions(&["write"], || {
+            transaction
+                .commit()
+                .map_err(|_| "work_sync_receipt_save_failed".to_string())
+        })?;
         drop(connection);
         self.dashboard()
     }
@@ -1173,20 +1444,29 @@ fn valid_target_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
-fn run_gworkspace_command(root: &str, arguments: &[&str]) -> Result<Value, String> {
+fn run_gworkspace_command(
+    root: &str,
+    arguments: &[&str],
+    spawn: impl FnOnce(&mut Command) -> Result<std::process::Child, String>,
+) -> Result<Value, String> {
     let root = fs::canonicalize(root).map_err(|_| "gworkspace_root_unavailable")?;
     let wrapper = root.join("scripts/run-with-backend-node.sh");
     let script = root.join("backend/scripts/oceanseo-project-sync.js");
     if !wrapper.is_file() || !script.is_file() {
         return Err("gworkspace_adapter_unavailable".to_string());
     }
-    let output = Command::new("bash")
+    let mut command = Command::new("bash");
+    command
         .arg(&wrapper)
         .arg("node")
         .arg(&script)
         .args(arguments)
         .current_dir(&root)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Selection/policy permit covers only launch, never the subprocess wait.
+    let output = spawn(&mut command)?
+        .wait_with_output()
         .map_err(|_| "gworkspace_adapter_failed")?;
     if !output.status.success() {
         return Err("gworkspace_adapter_rejected".to_string());
@@ -1240,37 +1520,135 @@ fn now_timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-#[tauri::command]
-pub fn get_work_dashboard(
-    store: tauri::State<'_, WorkMonitorStore>,
-) -> Result<WorkDashboard, String> {
-    store.dashboard()
+enum ResolvedWork<'a> {
+    Bound(tauri::State<'a, WorkMonitorStore>),
+    Personal(std::sync::Arc<WorkMonitorStore>),
+}
+impl std::ops::Deref for ResolvedWork<'_> {
+    type Target = WorkMonitorStore;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Bound(store) => store.inner(),
+            Self::Personal(store) => store,
+        }
+    }
+}
+fn resolved_work<'a>(
+    app: &'a tauri::AppHandle,
+    scope: &Option<String>,
+) -> Result<ResolvedWork<'a>, String> {
+    if let Some(scope) = scope {
+        crate::personal_workspaces::require_personal(app)?;
+        Ok(ResolvedWork::Personal(
+            app.state::<crate::personal_workspaces::PersonalRuntime>()
+                .work_store(scope, app)?,
+        ))
+    } else {
+        Ok(ResolvedWork::Bound(app.state::<WorkMonitorStore>()))
+    }
 }
 
 #[tauri::command]
-pub fn save_work_monitor_config(
+pub async fn get_work_dashboard(
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
+) -> Result<WorkDashboard, String> {
+    blocking_work(app, personal_scope, |store| store.dashboard()).await
+}
+
+#[tauri::command]
+pub async fn export_work_archive(
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
+) -> Result<Value, String> {
+    blocking_work(app, personal_scope, |store| store.archive()).await
+}
+
+async fn blocking_work<T: Send + 'static>(
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
+    operation: impl FnOnce(&WorkMonitorStore) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = crate::personal_workspaces::scene_operation(&app, &personal_scope)?;
+        if let Some(scope) = personal_scope {
+            crate::personal_workspaces::require_personal(&app)?;
+            let store = app
+                .state::<crate::personal_workspaces::PersonalRuntime>()
+                .work_store(&scope, &app)?;
+            operation(&store)
+        } else {
+            operation(&app.state::<WorkMonitorStore>())
+        }
+    })
+    .await
+    .map_err(|_| "work_monitor_task_failed".to_string())?
+}
+
+#[tauri::command]
+pub async fn save_work_monitor_config(
     config: WorkMonitorConfig,
-    store: tauri::State<'_, WorkMonitorStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<WorkDashboard, String> {
-    store.save_config(config)?;
-    store.dashboard()
+    blocking_work(app, personal_scope, move |store| {
+        store.save_config(config)?;
+        store.dashboard()
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn scan_workspaces(app: tauri::AppHandle) -> Result<WorkDashboard, String> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<WorkMonitorStore>().scan())
-        .await
-        .map_err(|_| "work_scan_task_failed".to_string())?
+pub async fn scan_workspaces(
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
+) -> Result<WorkDashboard, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = crate::personal_workspaces::scene_operation(&app, &personal_scope)?;
+        app.state::<crate::capabilities::CapabilityRuntime>()
+            .require(
+                &app.state::<crate::profiles::ProfileRuntime>(),
+                "work-monitor",
+                "write",
+            )?;
+        resolved_work(&app, &personal_scope)?.scan_authorized(|| {
+            app.state::<crate::capabilities::CapabilityRuntime>()
+                .require(
+                    &app.state::<crate::profiles::ProfileRuntime>(),
+                    "work-monitor",
+                    "write",
+                )
+        })
+    })
+    .await
+    .map_err(|_| "work_scan_task_failed".to_string())?
 }
 
 #[tauri::command]
 pub async fn run_scheduled_work_scan(
     app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<Option<WorkDashboard>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let store = app.state::<WorkMonitorStore>();
+        let _permit = crate::personal_workspaces::scene_operation(&app, &personal_scope)?;
+        app.state::<crate::capabilities::CapabilityRuntime>()
+            .require(
+                &app.state::<crate::profiles::ProfileRuntime>(),
+                "work-monitor",
+                "write",
+            )?;
+        let store = resolved_work(&app, &personal_scope)?;
         if store.is_due()? {
-            store.scan().map(Some)
+            store
+                .scan_authorized(|| {
+                    app.state::<crate::capabilities::CapabilityRuntime>()
+                        .require(
+                            &app.state::<crate::profiles::ProfileRuntime>(),
+                            "work-monitor",
+                            "write",
+                        )
+                })
+                .map(Some)
         } else {
             Ok(None)
         }
@@ -1282,12 +1660,18 @@ pub async fn run_scheduled_work_scan(
 #[tauri::command]
 pub async fn generate_work_report(
     scan_id: String,
-    store: tauri::State<'_, WorkMonitorStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
     ai_settings: tauri::State<'_, AiSettingsStore>,
+    policy: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
 ) -> Result<WorkDashboard, String> {
+    policy.require(&profile, "work-monitor", "write")?;
+    policy.while_authorized(&profile, "work-monitor", "ai", async {
     let ai = ai_settings.resolve()?;
     Uuid::parse_str(&scan_id).map_err(|_| "work_scan_id_invalid")?;
-    let input = store.analysis_input(&scan_id)?;
+    let input_scan_id = scan_id.clone();
+    let input = blocking_work(app.clone(), personal_scope.clone(), move |store| store.analysis_input(&input_scan_id)).await?;
     if input.is_empty() {
         return Err("work_scan_empty".to_string());
     }
@@ -1325,33 +1709,53 @@ pub async fn generate_work_report(
     }
     let text = extract_output_text(&value).ok_or("openai_output_missing")?;
     let report: AiWorkReport = serde_json::from_str(text).map_err(|_| "openai_output_invalid")?;
-    store.save_analysis(&scan_id, &report)
+    policy.require(&profile, "work-monitor", "write")?;
+    blocking_work(app.clone(), personal_scope.clone(), move |store| store.save_analysis(&scan_id, &report)).await
+    }).await
 }
 
 #[tauri::command]
 pub async fn get_gworkspace_catalog(
     app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<Vec<GWorkspaceProject>, String> {
-    tauri::async_runtime::spawn_blocking(move || app.state::<WorkMonitorStore>().catalog())
-        .await
-        .map_err(|_| "gworkspace_catalog_task_failed".to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = crate::personal_workspaces::scene_operation(&app, &personal_scope)?;
+        app.state::<crate::capabilities::CapabilityRuntime>()
+            .require(
+                &app.state::<crate::profiles::ProfileRuntime>(),
+                "work-monitor",
+                "read",
+            )?;
+        resolved_work(&app, &personal_scope)?.catalog()
+    })
+    .await
+    .map_err(|_| "gworkspace_catalog_task_failed".to_string())?
 }
 
 #[tauri::command]
-pub fn set_work_project_mapping(
+pub async fn set_work_project_mapping(
     project_id: String,
     target: Option<GWorkspaceProject>,
-    store: tauri::State<'_, WorkMonitorStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<WorkDashboard, String> {
-    store.set_mapping(&project_id, target.as_ref())
+    blocking_work(app, personal_scope, move |store| {
+        store.set_mapping(&project_id, target.as_ref())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn reject_work_draft(
+pub async fn reject_work_draft(
     draft_id: String,
-    store: tauri::State<'_, WorkMonitorStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<WorkDashboard, String> {
-    store.reject_draft(&draft_id)
+    blocking_work(app, personal_scope, move |store| {
+        store.reject_draft(&draft_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1361,9 +1765,17 @@ pub async fn sync_work_draft(
     highlight_zh: String,
     highlight_en: String,
     app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<WorkDashboard, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<WorkMonitorStore>().sync_draft(
+        let _permit = crate::personal_workspaces::scene_operation(&app, &personal_scope)?;
+        app.state::<crate::capabilities::CapabilityRuntime>()
+            .require(
+                &app.state::<crate::profiles::ProfileRuntime>(),
+                "work-monitor",
+                "write",
+            )?;
+        resolved_work(&app, &personal_scope)?.sync_draft(
             &draft_id,
             &target_project_id,
             &highlight_zh,
@@ -1385,6 +1797,219 @@ mod tests {
             temp.path().join("exports"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn queued_work_mutations_recheck_write_ai_and_profile_at_commit() {
+        use crate::capabilities::{
+            tests::{account, install_test_permissions, profile},
+            CapabilityRuntime,
+        };
+        use std::sync::{mpsc, Arc};
+        let temp = TempDir::new().unwrap();
+        let profile = profile(
+            &temp.path().join("client"),
+            &account("https://sync.example.com"),
+        );
+        let policy = CapabilityRuntime::open(&profile).unwrap();
+        install_test_permissions(&policy, &profile, &[]);
+        let store = Arc::new(store(&temp));
+        let database = temp.path().join("monitor.sqlite3");
+        let mut config = store.config().unwrap();
+        config.workspace_root = temp.path().to_string_lossy().into();
+        config.gworkspace_root = temp.path().to_string_lossy().into();
+        store.save_config(config.clone()).unwrap();
+        let scanned = ScannedProject {
+            path: "/synthetic/project".into(),
+            name: "Synthetic".into(),
+            branch: "main".into(),
+            version: None,
+            head: "fixture".into(),
+            commit_titles: vec!["Synthetic change".into()],
+            changed_paths: vec![],
+            untracked_file_count: 0,
+            latest_commit: None,
+            latest_commit_at: None,
+        };
+        let scan_id = Uuid::new_v4().to_string();
+        let timestamp = now_timestamp();
+        store
+            .persist_scan(
+                &scan_id,
+                &timestamp,
+                &timestamp,
+                &[scanned],
+                &HashMap::new(),
+                45,
+            )
+            .unwrap();
+        let project_id = store.dashboard().unwrap().projects[0].id.clone();
+        let report = AiWorkReport {
+            weekly_summary: "原总结".into(),
+            feedback: "原反馈".into(),
+            projects: vec![AiProjectAnalysis {
+                project_id: project_id.clone(),
+                status: "active".into(),
+                summary: "原概要".into(),
+                risk: "原风险".into(),
+                next_step: "下一步".into(),
+                should_sync: true,
+                highlight_zh: "原亮点".into(),
+                highlight_en: "Original highlight".into(),
+            }],
+        };
+        store.save_analysis(&scan_id, &report).unwrap();
+        let target = GWorkspaceProject {
+            public_id: "project:synthetic".into(),
+            slug: "synthetic".into(),
+            title: LocalizedTitle {
+                zh: "原映射".into(),
+                en: "Original mapping".into(),
+            },
+            status: "active".into(),
+            updated_at: timestamp.clone(),
+        };
+        store.set_mapping(&project_id, Some(&target)).unwrap();
+        let draft_id = store.dashboard().unwrap().drafts[0].id.clone();
+        store
+            .bind_authorization(policy.clone(), profile.clone())
+            .unwrap();
+        config.schedule_weekday = (config.schedule_weekday + 1) % 7;
+        let scan_for_report = scan_id.clone();
+        let mut changed_report = report;
+        changed_report.weekly_summary = "不应保存的新总结".into();
+        type Operation = Box<dyn FnOnce(&WorkMonitorStore) -> Result<(), String> + Send>;
+        let operations: Vec<(&str, Operation)> = vec![
+            (
+                "write",
+                Box::new(move |s| s.save_config(config).map(|_| ())),
+            ),
+            (
+                "write",
+                Box::new(move |s| {
+                    s.persist_scan(
+                        &Uuid::new_v4().to_string(),
+                        &timestamp,
+                        &timestamp,
+                        &[],
+                        &HashMap::new(),
+                        45,
+                    )
+                }),
+            ),
+            (
+                "ai",
+                Box::new(move |s| {
+                    s.save_analysis(&scan_for_report, &changed_report)
+                        .map(|_| ())
+                }),
+            ),
+            (
+                "write",
+                Box::new(move |s| s.set_mapping(&project_id, None).map(|_| ())),
+            ),
+            (
+                "write",
+                Box::new(move |s| s.reject_draft(&draft_id).map(|_| ())),
+            ),
+        ];
+        for (action, operation) in operations {
+            install_test_permissions(&policy, &profile, &[]);
+            let before = store.archive().unwrap()["tables"].clone();
+            let writer = Connection::open(&database).unwrap();
+            writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let (started_tx, started_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+            let worker_store = store.clone();
+            let worker = std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                done_tx.send(operation(&worker_store)).unwrap();
+            });
+            started_rx.recv().unwrap();
+            assert!(matches!(
+                done_rx.recv_timeout(Duration::from_millis(30)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            install_test_permissions(&policy, &profile, &[("work-monitor", action)]);
+            writer.execute_batch("COMMIT").unwrap();
+            assert!(done_rx
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .unwrap_err()
+                .contains(&format!("module_permission_denied:work-monitor:{action}")));
+            worker.join().unwrap();
+            assert_eq!(store.archive().unwrap()["tables"], before);
+        }
+        install_test_permissions(&policy, &profile, &[]);
+        let before = store.archive().unwrap()["tables"].clone();
+        profile.select(crate::profiles::LOCAL).unwrap();
+        assert!(store
+            .save_config(store.config().unwrap())
+            .unwrap_err()
+            .contains("资料库即将切换"));
+        assert_eq!(store.archive().unwrap()["tables"], before);
+        // No real downstream adapter is run: revoked launch must fail even with
+        // syntactically valid fixture paths and a pre-existing pending draft.
+        profile.select(&profile.current_key).unwrap();
+        install_test_permissions(&policy, &profile, &[("work-monitor", "write")]);
+        let draft = store.dashboard().unwrap().drafts[0].id.clone();
+        assert!(store
+            .sync_draft(&draft, "project:synthetic", "摘要", "Summary")
+            .unwrap_err()
+            .contains("module_permission_denied:work-monitor:write"));
+        assert_eq!(store.archive().unwrap()["tables"], before);
+        assert_eq!(fs::read_dir(&store.export_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn archive_keeps_all_history_without_dashboard_limits_or_mutation() {
+        let temp = TempDir::new().unwrap();
+        let store = store(&temp);
+        {
+            let connection = store.connection.lock().unwrap();
+            for index in 0..45 {
+                connection.execute("INSERT INTO work_scans VALUES (?1,'2026-10-01','2026-10-01',0,0,0,'原始扫描')", [format!("scan-{index}")]).unwrap();
+                connection.execute("INSERT INTO work_reports VALUES (?1,?2,'历史总结','原始反馈',?3,'2026-10-01')",
+                    rusqlite::params![format!("report-{index}"), format!("scan-{index}"), if index == 44 { "invalid original JSON" } else { "[]" }]).unwrap();
+            }
+        }
+        let before = store.dashboard().unwrap();
+        assert_eq!(before.recent_scans.len(), 8);
+        let first = store.archive().unwrap();
+        let second = store.archive().unwrap();
+        assert_eq!(first["tables"], second["tables"]);
+        assert_eq!(first["tables"]["scans"].as_array().unwrap().len(), 45);
+        assert_eq!(first["tables"]["reports"].as_array().unwrap().len(), 45);
+        assert_eq!(
+            first["tables"]["reports"][44]["project_analysis_json"],
+            "invalid original JSON"
+        );
+        assert_eq!(
+            first["tables"]["reports"][0]["project_analysis_json"],
+            serde_json::json!([])
+        );
+        assert_eq!(store.dashboard().unwrap().recent_scans.len(), 8);
+    }
+
+    #[test]
+    fn revoked_scan_does_not_commit_collected_metadata() {
+        let temp = TempDir::new().unwrap();
+        let store = store(&temp);
+        let mut config = store.config().unwrap();
+        config.workspace_root = temp.path().to_string_lossy().into();
+        config.gworkspace_root = temp.path().to_string_lossy().into();
+        store.save_config(config).unwrap();
+        let checks = std::cell::Cell::new(0);
+        let result = store.scan_authorized(|| {
+            checks.set(checks.get() + 1);
+            if checks.get() > 1 {
+                Err("fixture permission revoked".into())
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result.unwrap_err(), "fixture permission revoked");
+        assert!(store.dashboard().unwrap().recent_scans.is_empty());
     }
 
     #[test]

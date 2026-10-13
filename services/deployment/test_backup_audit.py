@@ -88,6 +88,41 @@ class BackupAuditTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("old", report["error"])
 
+    def test_audits_wal_snapshot_without_creating_sidecars(self):
+        with sqlite3.connect(self.backup) as connection:
+            self.assertEqual(connection.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+            connection.execute("INSERT INTO vault VALUES (1)")
+            connection.commit()
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        connection.close()
+        self.assertEqual(self.backup.read_bytes()[18:20], b"\x02\x02")
+        os.chmod(self.backups, 0o500)
+        try:
+            result, report = self.run_audit()
+            self.assertEqual(result.returncode, 0, report)
+            self.assertEqual(report["integrity"], "ok")
+            for suffix in ("-wal", "-shm", "-journal"):
+                self.assertFalse(Path(str(self.backup) + suffix).exists())
+        finally:
+            os.chmod(self.backups, 0o700)
+
+    def test_rejects_snapshot_with_pending_wal_or_journal(self):
+        for suffix in ("-wal", "-journal"):
+            with self.subTest(suffix=suffix):
+                sidecar = Path(str(self.backup) + suffix)
+                sidecar.write_bytes(b"pending transaction")
+                result, report = self.run_audit()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("standalone", report["error"])
+                sidecar.unlink()
+
+    def test_rejects_live_database_masquerading_as_backup(self):
+        self.backup.unlink()
+        os.link(self.database, self.backup)
+        result, report = self.run_audit()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("live database", report["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

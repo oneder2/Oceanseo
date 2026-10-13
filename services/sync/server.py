@@ -12,13 +12,61 @@ import sqlite3
 import threading
 import time
 import uuid
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 MAX_BODY = 16 * 1024 * 1024 + 4096
 
 
-def validate_update(value):
+def validate_bead_lifecycle(record):
+    """Protect new deletion/progress fields without changing legacy vault rules."""
+    if record is None:
+        return
+    works = record.get("works")
+    if not isinstance(works, list):
+        if "purgedWorkIds" in record:
+            raise ValueError("bead_lifecycle")
+        return
+    has_metadata = "purgedWorkIds" in record or any(isinstance(work, dict) and ("deletedAt" in work or "deletedFromArchive" in work) for work in works)
+    for work in works:
+        if not isinstance(work, dict):
+            continue  # Existing clients validate the complete business payload.
+        if "deletedAt" in work or "deletedFromArchive" in work:
+            stamp = work.get("deletedAt")
+            if not isinstance(stamp, str) or type(work.get("deletedFromArchive")) is not bool or work.get("archived") is not True:
+                raise ValueError("bead_lifecycle")
+            try:
+                parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    raise ValueError("bead_lifecycle")
+            except (ValueError, OverflowError):
+                raise ValueError("bead_lifecycle") from None
+        versions = work.get("versions", [])
+        if isinstance(versions, list):
+            for version in versions:
+                if not isinstance(version, dict) or "completedCells" not in version:
+                    continue
+                marks = version["completedCells"]
+                pattern = version.get("pattern")
+                cells = pattern.get("cells") if isinstance(pattern, dict) else None
+                if not isinstance(marks, list) or not isinstance(cells, list) or len(marks) > 25600 or any(type(mark) is not int or not 0 <= mark < len(cells) or type(cells[mark]) is not int or cells[mark] < 0 for mark in marks) or len(set(marks)) != len(marks):
+                    raise ValueError("bead_progress_snapshot")
+    if "purgedWorkIds" in record:
+        purged = record["purgedWorkIds"]
+        if not isinstance(purged, list) or len(purged) > 10000 or any(not isinstance(key, str) or not re.fullmatch(r"[0-9a-f-]{36}", key) for key in purged) or len(set(purged)) != len(purged):
+            raise ValueError("bead_lifecycle")
+        if any(str(uuid.UUID(key)) != key for key in purged):
+            raise ValueError("bead_lifecycle")
+        if any(isinstance(work, dict) and work.get("id") in purged for work in works):
+            raise ValueError("bead_lifecycle")
+    if has_metadata:
+        live = [work for work in works if isinstance(work, dict) and work.get("archived") is False and "deletedAt" not in work]
+        if (live and not any(work.get("id") == record.get("activeId") for work in live)) or (not live and record.get("activeId") != ""):
+            raise ValueError("bead_lifecycle")
+
+
+def validate_update(value, *, allow_bead_works=False):
     """Common vault wire format; authorization stays with each service."""
     if not isinstance(value, dict) or set(value) != {"protocol", "vaultId", "expectedRevision", "records"}:
         raise ValueError("shape")
@@ -28,10 +76,15 @@ def validate_update(value):
     if not isinstance(records, dict) or len(records) > 50000:
         raise ValueError("records")
     for key, record in records.items():
-        if key != "goals" and not re.fullmatch(r"task:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", key):
+        bead_works = allow_bead_works and key == "tideplan.bead-works.v1"
+        if not bead_works and key != "goals" and not re.fullmatch(r"task:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", key):
             raise ValueError("key")
         if record is not None and not isinstance(record, dict):
             raise ValueError("record")
+        if bead_works and len(json.dumps(record, ensure_ascii=False, allow_nan=False).encode()) > 2 * 1024 * 1024:
+            raise OverflowError("bead_works_too_large")
+        if bead_works:
+            validate_bead_lifecycle(record)
     encoded = json.dumps(records, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     if len(encoded.encode()) > MAX_BODY - 4096:
         raise OverflowError("too_large")

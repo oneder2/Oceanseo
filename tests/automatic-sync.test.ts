@@ -125,11 +125,32 @@ test("stale commit retries without permanent pause and single-flight prevents du
   await s.scheduler.run(); assert.equal(s.statuses.at(-1)?.state, "retry");
   assert.equal(s.settings.at(-1)?.pause, null);
 });
+test("policy revocation retains queued edits and resumes automatically after permission returns", async () => {
+  for (const failure of ["module_permission_denied:tasks:write", {kind:"stale",message:"module_permission_denied:goals:write"}]) {
+    const s=setup();s.scheduler.configure(prefs());
+    s.commit(async()=>{throw failure});
+    await s.scheduler.run();
+    assert.equal(s.statuses.at(-1)?.state,"retry");
+    assert.equal(s.settings.at(-1)?.pause,null);
+    s.canCheck(false);s.advance(5000);await s.scheduler.run();
+    assert.equal(s.counts().commits,1);
+    s.canCheck(true);s.commit(async()=>({changed:false,revision:2,snapshotPath:null}));
+    s.advance(8000);await s.scheduler.run();
+    assert.equal(s.counts().commits,2);
+    assert.equal(s.statuses.at(-1)?.state,"synced");
+    assert.equal(s.settings.at(-1)?.pause,null);
+    s.scheduler.dispose();
+  }
+});
 test("reload view is one-shot and validates arbitrary storage contents", () => {
   const values = new Map<string, string>();
   const storage = { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => { values.set(k, v); }, removeItem: (k: string) => { values.delete(k); } };
   rememberSyncView(storage, "calendar"); assert.equal(takeSyncView(storage), "calendar");
   assert.equal(takeSyncView(storage), "overview");
+  for (const oldRoute of ["bead-home", "bead-progress"]) {
+    storage.setItem("oceanseo.sync-return-view.v1", oldRoute);
+    assert.equal(takeSyncView(storage), "bead-studio");
+  }
   storage.setItem("oceanseo.sync-return-view.v1", "__proto__"); assert.equal(takeSyncView(storage), "overview");
 });
 test("received data retains write and interaction gates before reload, including failed navigation", async () => {

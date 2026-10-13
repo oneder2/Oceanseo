@@ -1,8 +1,15 @@
 import { profileLocalStorage as localStorage } from "./profileStorage";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "./personal/invoke";
 import type { Horizon, Priority, Task, TaskDraft, TaskOrigin } from "./types";
+import { personalEnabled, personalSnapshot, refreshPersonal, savePersonal } from "./personal/runtime";
+import { PENDING } from "./personal/model";
+import { requireModule } from "./modules/capabilities";
 
 const LEGACY_STORAGE_KEY = "tideplan.tasks.v1";
+let legacyMigrationFailed = false;
+export function unimportedTaskPayload() {
+  return legacyMigrationFailed ? localStorage.getItem(LEGACY_STORAGE_KEY) : null;
+}
 
 export interface TaskRecord {
   schema_version: "1.0.0";
@@ -136,14 +143,17 @@ export async function bootstrapTasks(): Promise<BootstrapResult> {
   let migrationError: string | null = null;
   try {
     await invoke("migrate_legacy_tasks", { rawPayload });
+    legacyMigrationFailed = false;
   } catch (error) {
     migrationError = String(error);
+    legacyMigrationFailed = true;
   }
   const records = await invoke<TaskRecord[]>("list_tasks");
   return { tasks: records.map(toTask), migrationError };
 }
 
-export async function createTask(draft: TaskDraft, origin: TaskOrigin | null): Promise<Task> {
+export async function createTask(draft: TaskDraft, origin: TaskOrigin | null, taskOwner?: string): Promise<Task> {
+  requireModule("tasks");
   if (!isTauri()) {
     const now = new Date().toISOString();
     const task: Task = {
@@ -156,24 +166,35 @@ export async function createTask(draft: TaskDraft, origin: TaskOrigin | null): P
       completedAt: null,
       origin: origin ?? { kind: "local", label: null, reference: null },
     };
+    if (personalEnabled()) {
+      if (!taskOwner) throw Error("请选择任务所属工作区或待定");
+      await savePersonal({ ...personalSnapshot()!, taskOwners: { ...personalSnapshot()!.taskOwners, [task.id]: taskOwner } });
+    }
     replacePreviewTasks([task, ...(previewTasks ?? [])]);
     return task;
   }
-  return toTask(await invoke<TaskRecord>("create_task", { mutation: mutation(draft, origin) }));
+  if (personalEnabled() && !taskOwner) throw Error("请选择任务所属工作区或待定");
+  const task = toTask(await invoke<TaskRecord>("create_task", { mutation: mutation(draft, origin), taskOwner }));
+  await refreshPersonal(); return task;
 }
 
-export async function updateTask(id: string, draft: TaskDraft): Promise<Task> {
+export async function updateTask(id: string, draft: TaskDraft, taskOwner?: string): Promise<Task> {
+  requireModule("tasks");
   if (!isTauri()) {
     const existing = (previewTasks ?? []).find((task) => task.id === id);
     if (!existing) throw new Error("task_not_found");
     const updated = { ...existing, ...draft, title: draft.title.trim(), updatedAt: new Date().toISOString() };
+    if (personalEnabled() && taskOwner) await savePersonal({ ...personalSnapshot()!, taskOwners: { ...personalSnapshot()!.taskOwners, [id]: taskOwner } });
     replacePreviewTasks((previewTasks ?? []).map((task) => task.id === id ? updated : task));
     return updated;
   }
-  return toTask(await invoke<TaskRecord>("update_task", { id, mutation: mutation(draft) }));
+  const owner = personalEnabled() ? (taskOwner ?? personalSnapshot()?.taskOwners[id] ?? PENDING) : undefined;
+  const task = toTask(await invoke<TaskRecord>("update_task", { id, mutation: mutation(draft), taskOwner: owner }));
+  await refreshPersonal(); return task;
 }
 
 export async function setTaskCompleted(id: string, completed: boolean): Promise<Task> {
+  requireModule("tasks");
   if (!isTauri()) {
     const existing = (previewTasks ?? []).find((task) => task.id === id);
     if (!existing) throw new Error("task_not_found");
@@ -189,6 +210,7 @@ export async function setTaskCompleted(id: string, completed: boolean): Promise<
 }
 
 export async function deleteTask(id: string): Promise<void> {
+  requireModule("tasks");
   if (!isTauri()) {
     replacePreviewTasks((previewTasks ?? []).filter((task) => task.id !== id));
     return;

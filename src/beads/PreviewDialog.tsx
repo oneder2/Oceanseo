@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { counts, type BeadPattern } from "./model";
 import { drawPattern } from "./render";
 import type { Proposal } from "./document";
+import { patternImpact, WORK_HISTORY_LIMIT, type BeadWork } from "./works";
 
 function Preview({ pattern }: { pattern: BeadPattern }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -21,11 +22,15 @@ export default function PreviewDialog({
   proposal,
   apply,
   cancel,
+  work,
+  restoreProgress,
 }: {
   before: BeadPattern;
   proposal: Proposal;
   apply: () => void;
   cancel: () => void;
+  work?: BeadWork;
+  restoreProgress?: number;
 }) {
   const ref = useRef<HTMLElement>(null),
     cancelRef = useRef(cancel);
@@ -65,6 +70,8 @@ export default function PreviewDialog({
   }, []);
   const total = (p: BeadPattern) => counts(p).reduce((a, b) => a + b, 0);
   const delta = total(proposal.after) - total(before);
+  const impact = patternImpact(before, proposal.after);
+  const retained = restoreProgress ?? (impact.progressCompatible ? work?.completedCells.length ?? 0 : 0);
   return (
     <div
       className="bead-modal-backdrop"
@@ -99,9 +106,18 @@ export default function PreviewDialog({
           ))}
         </div>
         <p>{proposal.message}</p>
+        <table className="bead-change-summary"><caption>变更摘要</caption><tbody>
+          <tr><th scope="row">网格</th><td>{before.width} × {before.height} → {proposal.after.width} × {proposal.after.height}</td></tr>
+          <tr><th scope="row">使用颜色</th><td>{counts(before).filter(Boolean).length} → {counts(proposal.after).filter(Boolean).length} 色</td></tr>
+          <tr><th scope="row">变化格点</th><td>{impact.changed} 个{impact.cropped > 0 && `，其中 ${impact.cropped} 颗被裁去`}</td></tr>
+          <tr><th scope="row">拼放记录</th><td>当前 {work?.completedCells.length ?? 0} 颗 → 应用后 {retained} 颗</td></tr>
+        </tbody></table>
+        {work && <p className="bead-progress-impact">{restoreProgress !== undefined ? "恢复版本会带回当时记录的完成标记。"
+          : impact.progressCompatible ? "格点和豆色一致，保留已有拼放标记。" : "新图纸从零记录拼放进度；原完成记录会保存在旧版本，可通过作品记录恢复。"}</p>}
+        {work && work.versions.length >= WORK_HISTORY_LIMIT && <p className="bead-history-limit">最多保留最近 {WORK_HISTORY_LIMIT} 个版本。本次确认后，最早的版本会移出记录；长期保留请先导出作品文件或备份。</p>}
         <p className="bead-preview-delta">
           豆数变化：{delta >= 0 ? "+" : ""}
-          {delta} 颗 · 应用后可整体撤销
+          {delta} 颗 · {restoreProgress !== undefined ? "确认后另存版本，可从作品记录恢复" : "应用后可整体撤销"}
         </p>
         <footer>
           <button className="secondary-button" onClick={cancel}>

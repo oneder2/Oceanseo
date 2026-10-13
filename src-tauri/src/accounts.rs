@@ -1,7 +1,7 @@
 //! Invitation-only account transport. Passwords are request-local; only device
 //! sessions reach encrypted/private profile files, never the web renderer.
 use crate::{
-    profiles::{AccountProfile, ProfileRuntime, ProfileStatus, ProfileSummary},
+    profiles::{AccountProfile, ProfileRuntime, ProfileStatus, ProfileSummary, WorkspaceBinding},
     sync::SyncRuntime,
 };
 use serde::{Deserialize, Serialize};
@@ -47,7 +47,7 @@ struct AuthReply {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Me {
+pub(crate) struct Me {
     user: User,
     session_id: String,
     expires_at: i64,
@@ -70,6 +70,23 @@ pub struct DeviceSession {
 #[serde(deny_unknown_fields)]
 pub struct SessionList {
     pub sessions: Vec<DeviceSession>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceSummary {
+    pub id: String,
+    pub edition: String,
+    pub name: String,
+    pub vault_id: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceList {
+    pub schema_version: u8,
+    pub environment: String,
+    pub workspaces: Vec<WorkspaceSummary>,
 }
 
 fn session_valid(
@@ -115,6 +132,7 @@ async fn request(
 ) -> Result<Value, String> {
     let endpoint = crate::sync::normalize_endpoint(endpoint)?;
     let client = reqwest::Client::builder()
+        .user_agent(concat!("Oceanseo/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -151,6 +169,7 @@ async fn authenticate(
     input: SignIn,
     platform: &str,
 ) -> Result<ProfileSummary, String> {
+    let previous = runtime.current_account()?;
     let endpoint = crate::sync::normalize_endpoint(&input.endpoint)?;
     let username = input.username.trim().to_ascii_lowercase();
     if username.len() < 3
@@ -208,7 +227,7 @@ async fn authenticate(
     {
         return Err("登录响应身份或设备字段不一致，未连接本机资料库".into());
     }
-    let account = AccountProfile {
+    let mut account = AccountProfile {
         endpoint,
         user_id: reply.user.id,
         username: reply.user.username,
@@ -217,9 +236,29 @@ async fn authenticate(
         expires_at: reply.session.expires_at,
         device_name: reply.session.device_name,
         token: reply.token,
+        workspace: None,
     };
-    account.validate()?;
-    match runtime.save_account(&account) {
+    // Reauthentication must remain in the active workspace instead of silently
+    // switching back to the legacy account directory.
+    let mut same_source = true;
+    if let Some(previous) = previous {
+        if previous.endpoint == account.endpoint && previous.user_id == account.user_id {
+            if previous.vault_id != account.vault_id {
+                same_source = false;
+            }
+            account.workspace = previous.workspace;
+        }
+    }
+    let saved = async {
+        if !same_source {
+            return Err("账号资料库来源已变化，原资料已保留".into());
+        }
+        account.validate()?;
+        account.validate()?;
+        runtime.save_account(&account)
+    }
+    .await;
+    match saved {
         Ok(summary) => Ok(summary),
         Err(error) => {
             // Avoid accumulating a new remote session when local secure storage fails.
@@ -255,6 +294,13 @@ async fn verify_identity(account: &AccountProfile) -> Result<Me, String> {
         None,
     )
     .await?;
+    validate_identity_response(account, value)
+}
+
+pub(crate) fn validate_identity_response(
+    account: &AccountProfile,
+    value: Value,
+) -> Result<Me, String> {
     let me: Me = serde_json::from_value(value).map_err(|_| "账号资料响应无效")?;
     if me.user.id != account.user_id
         || me.user.username != account.username
@@ -265,6 +311,105 @@ async fn verify_identity(account: &AccountProfile) -> Result<Me, String> {
         return Err("设备会话与资料库身份不匹配，已停止操作".into());
     }
     Ok(me)
+}
+
+async fn workspaces(account: &AccountProfile) -> Result<WorkspaceList, String> {
+    verify_identity(account).await?;
+    let value = request(
+        &account.endpoint,
+        "/v2/workspaces",
+        reqwest::Method::GET,
+        Some(&account.token),
+        None,
+    )
+    .await?;
+    let mut list: WorkspaceList =
+        serde_json::from_value(value).map_err(|_| "工作空间响应格式无效，原资料已保留")?;
+    if list.schema_version != 1
+        || !matches!(list.environment.as_str(), "preview" | "live")
+        || list.workspaces.len() > 2
+    {
+        return Err("工作空间版本或环境不受支持".into());
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut editions = std::collections::HashSet::new();
+    for space in &list.workspaces {
+        WorkspaceBinding {
+            version: 1,
+            environment: list.environment.clone(),
+            edition: space.edition.clone(),
+            id: space.id.clone(),
+            vault_id: space.vault_id.clone(),
+        }
+        .validate()?;
+        if !ids.insert(&space.id)
+            || !editions.insert(&space.edition)
+            || space.vault_id == account.vault_id
+            || space.name.trim().is_empty()
+            || space.name.chars().count() > 80
+            || space.name.chars().any(char::is_control)
+        {
+            return Err("工作空间身份或名称异常".into());
+        }
+    }
+    if let Some(bound) = &account.workspace {
+        if bound.environment != list.environment
+            || !list.workspaces.iter().any(|space| {
+                space.id == bound.id
+                    && space.edition == bound.edition
+                    && space.vault_id == bound.vault_id
+            })
+        {
+            return Err("当前工作空间已不可访问或来源变化，本机资料仍保留".into());
+        }
+    }
+    list.workspaces.retain(|space| space.edition == "personal");
+    Ok(list)
+}
+
+async fn select_workspace(
+    runtime: &ProfileRuntime,
+    workspace_id: &str,
+) -> Result<ProfileStatus, String> {
+    let mut account = active_account(runtime)?;
+    let list = workspaces(&account).await?;
+    let space = list
+        .workspaces
+        .iter()
+        .find(|space| space.id == workspace_id)
+        .ok_or("无法访问这个工作空间")?;
+    account.workspace = Some(WorkspaceBinding {
+        version: 1,
+        environment: list.environment,
+        edition: space.edition.clone(),
+        id: space.id.clone(),
+        vault_id: space.vault_id.clone(),
+    });
+    let saved = runtime.save_account(&account)?;
+    runtime.select(&saved.key)
+}
+
+#[tauri::command]
+pub async fn list_account_workspaces(
+    runtime: tauri::State<'_, ProfileRuntime>,
+) -> Result<WorkspaceList, String> {
+    let _guard = runtime.gate.lock().await;
+    workspaces(&active_account(&runtime)?).await
+}
+
+#[tauri::command]
+pub async fn select_account_workspace(
+    runtime: tauri::State<'_, ProfileRuntime>,
+    sync: tauri::State<'_, SyncRuntime>,
+    workspace_id: String,
+    expected_current: String,
+) -> Result<ProfileStatus, String> {
+    let _guard = runtime.gate.lock().await;
+    let _sync_guard = sync.gate.lock().await;
+    if expected_current != runtime.current_key {
+        return Err("当前资料库已变化，请重新打开账号页面".into());
+    }
+    select_workspace(&runtime, &workspace_id).await
 }
 
 #[tauri::command]
@@ -293,6 +438,19 @@ pub async fn select_local_profile(
     let _sync_guard = sync.gate.lock().await;
     if expected_current != runtime.current_key {
         return Err("当前资料库已变化，请重新打开账号设置".into());
+    }
+    if key != "local"
+        && runtime
+            .list()?
+            .iter()
+            .find(|p| p.key == key)
+            .is_some_and(|p| {
+                p.workspace
+                    .as_ref()
+                    .is_some_and(|w| w.edition != "personal")
+            })
+    {
+        return Err("此资料库属于独立产品，原始资料已保留".into());
     }
     runtime.select(&key)
 }
@@ -515,6 +673,131 @@ mod tests {
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
+    }
+
+    #[tokio::test]
+    async fn native_workspace_switch_sync_and_reauthentication_are_owner_scoped() {
+        use crate::{
+            profiles::WorkspaceBinding,
+            sync::{Config, SyncRuntime},
+            tasks::{TaskMutation, TaskStore},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let mut child = std::process::Command::new("python3").current_dir(root)
+            .args(["-u", "-c", "import os,json; from services.accounts.server import create_server; s=create_server(('127.0.0.1',0),os.environ['TEST_ACCOUNTS_DB'],control_database=os.environ['TEST_CONTROL_DB'],environment='preview'); a=s.store.register('alice','Synthetic-password-123!',s.store.create_invite(),'Linux','linux'); b=s.store.register('bob','Synthetic-password-123!',s.store.create_invite(),'Other','linux'); s.control.grant_role('alice','owner'); p=s.control.create_workspace(a['token'],'personal','Synthetic personal'); c=p; print(json.dumps({'port':s.server_port,'alice':a,'bob':b,'spaces':c['workspaces']}),flush=True); s.serve_forever()"])
+            .env("TEST_ACCOUNTS_DB", temp.path().join("accounts.sqlite3"))
+            .env("TEST_CONTROL_DB", temp.path().join("control.sqlite3"))
+            .stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let _server = Server(child);
+        let setup: Value = serde_json::from_str(&line).unwrap();
+        let endpoint = format!("http://127.0.0.1:{}", setup["port"]);
+        let client_root = temp.path().join("client");
+        let local = ProfileRuntime::open(&client_root, CredentialCipher::plain()).unwrap();
+        let input = |username: &str| SignIn {
+            endpoint: endpoint.clone(),
+            username: username.into(),
+            password: "Synthetic-password-123!".into(),
+            device_name: "Test computer".into(),
+            invite: None,
+        };
+        let alice = authenticate(&local, input("alice"), "linux").await.unwrap();
+        let bob = authenticate(&local, input("bob"), "linux").await.unwrap();
+        local.select(&alice.key).unwrap();
+        let legacy = ProfileRuntime::open(&client_root, CredentialCipher::plain()).unwrap();
+        let list = workspaces(&active_account(&legacy).unwrap()).await.unwrap();
+        let personal = list
+            .workspaces
+            .iter()
+            .find(|s| s.edition == "personal")
+            .unwrap();
+        let selected = select_workspace(&legacy, &personal.id).await.unwrap();
+        assert!(selected.restart_required);
+        assert_eq!(legacy.current_key, alice.key);
+        let active = ProfileRuntime::open(&client_root, CredentialCipher::plain()).unwrap();
+        let original_key = active.current_key.clone();
+        let config_path = active.data_dir.join("account-session.json");
+        let sync = SyncRuntime {
+            path: config_path,
+            account_key: Some(original_key.clone()),
+            cipher: CredentialCipher::plain(),
+            gate: tokio::sync::Mutex::new(()),
+            preview: std::sync::Mutex::new(None),
+            automatic_preview: std::sync::Mutex::new(None),
+        };
+        // The native config must route this profile to the workspace vault.
+        let profile = active.current_account().unwrap().unwrap();
+        let config = sync.config().unwrap();
+        assert_eq!(config.expected_vault_id, Some(personal.vault_id.clone()));
+        assert_eq!(config.workspace, profile.workspace);
+        let store = TaskStore::open(&active.data_dir.join("oceanseo-tasks.sqlite3")).unwrap();
+        store
+            .create(TaskMutation {
+                title: "personal workspace only".into(),
+                notes: "".into(),
+                horizon: "short".into(),
+                priority: "normal".into(),
+                start_date: None,
+                due_date: None,
+                origin: None,
+            })
+            .unwrap();
+        let (records, _) = store.sync_snapshot().unwrap();
+        let saved = crate::sync::request(
+            &config,
+            Some(json!({"protocol":1,"vaultId":personal.vault_id,
+            "expectedRevision":0,"records":records})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved.records.len(), 1);
+        assert_eq!(
+            request(
+                &endpoint,
+                "/v2/vault",
+                reqwest::Method::GET,
+                Some(&profile.token),
+                None
+            )
+            .await
+            .unwrap()["records"],
+            json!({})
+        );
+        let reauthenticated = authenticate(&active, input("alice"), "linux")
+            .await
+            .unwrap();
+        assert_eq!(reauthenticated.key, original_key);
+        let new_session = active.current_account().unwrap().unwrap();
+        assert_eq!(new_session.workspace, profile.workspace);
+        assert_ne!(new_session.token, profile.token);
+        verify_identity(&new_session).await.unwrap();
+        assert_eq!(store.list().unwrap()[0].title, "personal workspace only");
+        // A member cannot use the administrator's workspace ID.
+        local.select(&bob.key).unwrap();
+        let bob_runtime = ProfileRuntime::open(&client_root, CredentialCipher::plain()).unwrap();
+        assert!(select_workspace(&bob_runtime, &personal.id).await.is_err());
+        assert_eq!(bob_runtime.status().unwrap().selected_key, bob.key);
+        let forged = Config {
+            token: active_account(&bob_runtime).unwrap().token,
+            ..config.clone()
+        };
+        assert!(crate::sync::request(&forged, None).await.is_err());
+        let mismatch = Config {
+            workspace: Some(WorkspaceBinding {
+                vault_id: uuid::Uuid::new_v4().to_string(),
+                ..config.workspace.clone().unwrap()
+            }),
+            ..config
+        };
+        assert!(crate::sync::request(&mismatch, None).await.is_err());
+        // Also exercise the config decoder used by automatic synchronization.
+        assert_eq!(sync.config().unwrap().token, new_session.token);
     }
 
     #[tokio::test]

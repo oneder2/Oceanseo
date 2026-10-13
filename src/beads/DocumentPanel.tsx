@@ -83,7 +83,7 @@ export default function DocumentPanel({
       />
       <h3>新建图纸</h3>
       <p className="bead-help">
-        当前保存一份图纸。新建会替换当前内容，应用前可预览，应用后可撤销。
+        此处清空当前作品的图纸，保留作品身份。另存一件独立作品，请使用上方“新建作品”。
       </p>
       <button
         className="secondary-button"

@@ -14,6 +14,7 @@ test("Android reminder guidance distinguishes disabled, permission, channel and 
   assert.match(mobileReminderMessage(true, { ...allowed, permission: false, appNotifications: false }), /应用通知未获准/);
   assert.match(mobileReminderMessage(true, { ...allowed, permission: false, channelEnabled: false }), /频道已关闭/);
   assert.match(mobileReminderMessage(true, { ...allowed, scheduled: false }), /尚未安排/);
+  assert.match(mobileReminderMessage(true, { ...allowed, profileAllowed: false }), /资料空间.*已暂停/);
   assert.match(mobileReminderMessage(true, allowed), /可能延迟/);
 });
 

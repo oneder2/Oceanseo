@@ -6,14 +6,14 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
 };
 use uuid::Uuid;
 
 pub const TASK_SCHEMA_VERSION: &str = "1.0.0";
 const LEGACY_MIGRATION_KEY: &str = "tideplan.tasks.v1";
 const BACKUP_SCHEMA_VERSION: &str = "1.0.0";
-const APP_STATE_KEYS: [&str; 11] = [
+const APP_STATE_KEYS: [&str; 12] = [
     "tideplan.reminders.v1",
     "tideplan.purchase-list.v1",
     "tideplan.meal-plan.v1",
@@ -21,6 +21,7 @@ const APP_STATE_KEYS: [&str; 11] = [
     "tideplan.countdowns.v1",
     "tideplan.meal-preferences.v1",
     "tideplan.bead-pattern.v1",
+    "tideplan.bead-works.v1",
     "tideplan.life.v1",
     "tideplan.assistant.v1",
     "tideplan.goals.v1",
@@ -28,6 +29,10 @@ const APP_STATE_KEYS: [&str; 11] = [
 ];
 const MAX_APP_STATE_BYTES: usize = 2 * 1024 * 1024;
 
+#[path = "bead_migration.rs"]
+mod bead_migration;
+#[path = "bead_transfer.rs"]
+pub mod bead_transfer;
 #[path = "sync_store.rs"]
 mod sync_store;
 
@@ -112,14 +117,186 @@ struct LegacyTask {
 pub struct TaskStore {
     connection: Mutex<Connection>,
     backup_dir: PathBuf,
+    personal: bool,
+    owner_journal_dir: Option<PathBuf>,
+    authorization: OnceLock<(
+        crate::capabilities::CapabilityRuntime,
+        crate::profiles::ProfileRuntime,
+    )>,
 }
 
 impl TaskStore {
+    pub(crate) fn replace_personal_state(
+        &self,
+        state: HashMap<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        if !self.personal {
+            return Err("需要个人工作区存储".into());
+        }
+        for (key, value) in &state {
+            validate_app_state(key, value)?;
+        }
+        let mut connection = self.connection.lock().map_err(|_| "database_lock_failed")?;
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM personal_state.app_state", [])
+            .map_err(|e| e.to_string())?;
+        for (key, value) in state {
+            tx.execute(
+                "INSERT INTO personal_state.app_state(key,value_json,updated_at) VALUES(?1,?2,?3)",
+                params![key, serialize_app_state(&value)?, now_timestamp()],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.execute("INSERT OR REPLACE INTO personal_state.app_state_bootstrap(singleton,completed_at) VALUES(1,?1)", [now_timestamp()]).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    }
+    // Keep tasks in the original database; scene state is attached separately.
+    pub fn open_personal(
+        database_path: &Path,
+        directory: &Path,
+        registry: &Path,
+    ) -> Result<Self, String> {
+        let mut store = Self::open(database_path)?;
+        store.backup_dir = directory.join("migration-backups");
+        {
+            let connection = store
+                .connection
+                .lock()
+                .map_err(|_| "database_lock_failed")?;
+            connection
+                .execute(
+                    "ATTACH DATABASE ?1 AS personal_state",
+                    [directory.join("state.sqlite3").to_string_lossy().as_ref()],
+                )
+                .map_err(|e| e.to_string())?;
+            connection
+                .execute(
+                    "ATTACH DATABASE ?1 AS personal_registry",
+                    [registry.to_string_lossy().as_ref()],
+                )
+                .map_err(|e| e.to_string())?;
+            connection.execute_batch("CREATE TABLE IF NOT EXISTS personal_state.app_state(key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS personal_state.app_state_bootstrap(singleton INTEGER PRIMARY KEY CHECK(singleton=1), completed_at TEXT NOT NULL);").map_err(|e| e.to_string())?;
+        }
+        store.personal = true;
+        store.owner_journal_dir = Some(registry.parent().unwrap().join("task-assignment-journal"));
+        Ok(store)
+    }
+    fn state_sql(&self, sql: &str) -> String {
+        if self.personal {
+            sql.replace("app_state", "personal_state.app_state")
+        } else {
+            sql.into()
+        }
+    }
+    fn assignment_intent(
+        &self,
+        record: &TaskRecord,
+        owner: Option<&str>,
+    ) -> Result<Option<PathBuf>, String> {
+        let (Some(directory), Some(owner)) = (&self.owner_journal_dir, owner) else {
+            return Ok(None);
+        };
+        crate::profiles::private_dir(directory)?;
+        let journal = directory.join(format!("{}.json", uuid::Uuid::new_v4()));
+        crate::profiles::write_private(
+            &journal,
+            &serde_json::to_vec(&serde_json::json!({"task":record,"owner":owner}))
+                .map_err(|e| e.to_string())?,
+        )?;
+        Ok(Some(journal))
+    }
+    fn write_owner(&self, tx: &Connection, id: &str, owner: Option<&str>) -> Result<(), String> {
+        let Some(owner) = owner else {
+            return Ok(());
+        };
+        if !self.personal {
+            return Err("个人任务归属需要个人工作区".into());
+        }
+        let raw: String = tx
+            .query_row(
+                "SELECT value FROM personal_registry.document WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let mut doc: crate::personal_workspaces::Document =
+            serde_json::from_str(&raw).map_err(|_| "工作区资料损坏")?;
+        if owner != "pending" {
+            doc.require_workspace(owner)?;
+        }
+        doc.task_owners.insert(id.into(), owner.into());
+        doc.revision += 1;
+        tx.execute(
+            "UPDATE personal_registry.document SET value=?1 WHERE id=1",
+            [serde_json::to_string(&doc).map_err(|e| e.to_string())?],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn bind_authorization(
+        &self,
+        capabilities: crate::capabilities::CapabilityRuntime,
+        profile: crate::profiles::ProfileRuntime,
+    ) -> Result<(), String> {
+        self.authorization
+            .set((capabilities, profile))
+            .map_err(|_| "数据库授权已绑定，不可替换".into())
+    }
+
+    fn with_writes<T>(
+        &self,
+        modules: &[&str],
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        match self.authorization.get() {
+            Some((capabilities, profile)) => capabilities.with_writes(profile, modules, operation),
+            // Standalone stores used by migrations/tests have no application runtime.
+            // Native app setup binds authorization before exposing this store to IPC.
+            None => operation(),
+        }
+    }
+    #[cfg(test)]
+    pub fn import_completed(&self, app_state: bool) -> Result<bool, String> {
+        let connection = self.connection.lock().map_err(|_| "database_lock_failed")?;
+        if app_state {
+            connection
+                .query_row(
+                    &self.state_sql(
+                        "SELECT EXISTS(SELECT 1 FROM app_state_bootstrap WHERE singleton=1)",
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "app_state_migration_read_failed".into())
+        } else {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM legacy_migrations WHERE migration_key=?1)",
+                    [LEGACY_MIGRATION_KEY],
+                    |row| row.get(0),
+                )
+                .map_err(|_| "legacy_migration_status_failed".into())
+        }
+    }
+    #[cfg(test)]
+    pub fn app_state_value(&self, key: &str) -> Result<Option<serde_json::Value>, String> {
+        let connection = self.connection.lock().map_err(|_| "database_lock_failed")?;
+        let raw: Option<String> = connection
+            .query_row(
+                &self.state_sql("SELECT value_json FROM app_state WHERE key=?1"),
+                [key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| "app_state_read_failed")?;
+        raw.map(|v| serde_json::from_str(&v).map_err(|_| "app_state_invalid".to_string()))
+            .transpose()
+    }
     pub fn goal_state(&self) -> Result<Option<serde_json::Value>, String> {
         let connection = self.connection.lock().map_err(|_| "database_lock_failed")?;
         let raw: Option<String> = connection
             .query_row(
-                "SELECT value_json FROM app_state WHERE key=?1",
+                &self.state_sql("SELECT value_json FROM app_state WHERE key=?1"),
                 [crate::goals::KEY],
                 |r| r.get(0),
             )
@@ -131,16 +308,30 @@ impl TaskStore {
         .transpose()
     }
 
+    #[cfg(test)]
     pub fn commit_goals(
         &self,
         request: crate::goals::GoalCommit,
     ) -> Result<crate::goals::GoalReply, String> {
+        self.commit_goals_assigned(request, None)
+    }
+    pub fn commit_goals_assigned(
+        &self,
+        request: crate::goals::GoalCommit,
+        owner: Option<String>,
+    ) -> Result<crate::goals::GoalReply, String> {
         use serde_json::json;
+        let mut modules = vec!["goals"];
+        if request.undo || !request.create_tasks.is_empty() || !request.update_tasks.is_empty() {
+            modules.push("tasks");
+        }
         let mut connection = self.connection.lock().map_err(|_| "database_lock_failed")?;
-        let tx = connection.transaction().map_err(|_| "目标事务无法启动")?;
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "目标事务无法启动")?;
         let raw: Option<String> = tx
             .query_row(
-                "SELECT value_json FROM app_state WHERE key=?1",
+                &self.state_sql("SELECT value_json FROM app_state WHERE key=?1"),
                 [crate::goals::KEY],
                 |r| r.get(0),
             )
@@ -276,6 +467,7 @@ impl TaskStore {
                 return Err("新任务缺少目标关联".into());
             }
             insert_task(&tx, task).map_err(|_| "创建行动失败，整批方案未写入")?;
+            self.write_owner(&tx, &task.id, owner.as_deref())?;
         }
         let tasks = list_tasks_from_connection(&tx)?;
         for a in next["actions"].as_array().unwrap() {
@@ -287,8 +479,11 @@ impl TaskStore {
                 return Err("关联任务不存在，方案未写入".into());
             }
         }
-        tx.execute("INSERT INTO app_state(key,value_json,updated_at) VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",params![crate::goals::KEY,serialize_app_state(&next)?,now_timestamp()]).map_err(|_|"目标保存失败")?;
-        tx.commit().map_err(|_| "目标事务未完成，请重试")?;
+        tx.execute(&self.state_sql("INSERT INTO app_state(key,value_json,updated_at) VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at"),params![crate::goals::KEY,serialize_app_state(&next)?,now_timestamp()]).map_err(|_|"目标保存失败")?;
+        self.with_writes(&modules, || {
+            tx.commit()
+                .map_err(|_| "目标事务未完成，请重试".to_string())
+        })?;
         Ok(crate::goals::GoalReply { state: next, tasks })
     }
 
@@ -320,6 +515,9 @@ impl TaskStore {
         let store = Self {
             connection: Mutex::new(connection),
             backup_dir,
+            personal: false,
+            owner_journal_dir: None,
+            authorization: OnceLock::new(),
         };
         store.apply_migrations()?;
         Ok(store)
@@ -442,23 +640,18 @@ impl TaskStore {
             .connection
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
-        connection
-            .query_row(
-                r#"
-                SELECT schema_version, id, title, notes, horizon, priority,
-                       start_date, due_date, created_at, updated_at, completed_at,
-                       origin_kind, origin_label, origin_reference
-                FROM tasks WHERE id = ?1
-                "#,
-                [id],
-                task_from_row,
-            )
-            .optional()
-            .map_err(|_| "task_read_failed".to_string())?
-            .ok_or_else(|| "task_not_found".to_string())
+        read_task(&connection, id)
     }
 
+    #[cfg(test)]
     pub fn create(&self, mutation: TaskMutation) -> Result<TaskRecord, String> {
+        self.create_assigned(mutation, None)
+    }
+    pub fn create_assigned(
+        &self,
+        mutation: TaskMutation,
+        owner: Option<String>,
+    ) -> Result<TaskRecord, String> {
         let now = now_timestamp();
         let record = TaskRecord {
             schema_version: TASK_SCHEMA_VERSION.to_string(),
@@ -481,16 +674,44 @@ impl TaskStore {
             }),
         };
         validate_task(&record).map_err(|code| format!("task_invalid:{code}"))?;
-        let connection = self
+        let mut connection = self
             .connection
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
-        insert_task(&connection, &record).map_err(|_| "task_create_failed".to_string())?;
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "task_create_failed".to_string())?;
+        insert_task(&tx, &record).map_err(|_| "task_create_failed".to_string())?;
+        self.write_owner(&tx, &record.id, owner.as_deref())?;
+        let journal = self.assignment_intent(&record, owner.as_deref())?;
+        self.with_writes(&["tasks"], || {
+            tx.commit().map_err(|_| "task_create_failed".to_string())
+        })?;
+        if let Some(journal) = journal {
+            let _ = fs::remove_file(journal);
+        }
         Ok(record)
     }
 
+    #[cfg(test)]
     pub fn update(&self, id: &str, mutation: TaskMutation) -> Result<TaskRecord, String> {
-        let current = self.get(id)?;
+        self.update_assigned(id, mutation, None)
+    }
+    pub fn update_assigned(
+        &self,
+        id: &str,
+        mutation: TaskMutation,
+        owner: Option<String>,
+    ) -> Result<TaskRecord, String> {
+        validate_uuid(id).map_err(|_| "task_id_invalid".to_string())?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "database_lock_failed".to_string())?;
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "task_update_failed".to_string())?;
+        let current = read_task(&tx, id)?;
         let record = TaskRecord {
             schema_version: current.schema_version,
             id: current.id,
@@ -506,14 +727,18 @@ impl TaskStore {
             origin: current.origin,
         };
         validate_task(&record).map_err(|code| format!("task_invalid:{code}"))?;
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| "database_lock_failed".to_string())?;
+        self.write_owner(&tx, id, owner.as_deref())?;
+        let journal = self.assignment_intent(&record, owner.as_deref())?;
         let changed =
-            update_task_row(&connection, &record).map_err(|_| "task_update_failed".to_string())?;
+            update_task_row(&tx, &record).map_err(|_| "task_update_failed".to_string())?;
         if changed != 1 {
             return Err("task_not_found".to_string());
+        }
+        self.with_writes(&["tasks"], || {
+            tx.commit().map_err(|_| "task_update_failed".to_string())
+        })?;
+        if let Some(journal) = journal {
+            let _ = fs::remove_file(journal);
         }
         Ok(record)
     }
@@ -522,11 +747,14 @@ impl TaskStore {
         validate_uuid(id).map_err(|_| "task_id_invalid".to_string())?;
         let timestamp = now_timestamp();
         let completed_at = completed.then_some(timestamp.clone());
-        let connection = self
+        let mut connection = self
             .connection
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
-        let changed = connection
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "task_completion_failed".to_string())?;
+        let changed = tx
             .execute(
                 "UPDATE tasks SET completed_at = ?1, updated_at = ?2 WHERE id = ?3",
                 params![completed_at, timestamp, id],
@@ -535,22 +763,32 @@ impl TaskStore {
         if changed != 1 {
             return Err("task_not_found".to_string());
         }
-        drop(connection);
-        self.get(id)
+        let record = read_task(&tx, id)?;
+        self.with_writes(&["tasks"], || {
+            tx.commit()
+                .map_err(|_| "task_completion_failed".to_string())
+        })?;
+        Ok(record)
     }
 
     pub fn delete(&self, id: &str) -> Result<(), String> {
         validate_uuid(id).map_err(|_| "task_id_invalid".to_string())?;
-        let connection = self
+        let mut connection = self
             .connection
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
-        let changed = connection
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "task_delete_failed".to_string())?;
+        let changed = tx
             .execute("DELETE FROM tasks WHERE id = ?1", [id])
             .map_err(|_| "task_delete_failed".to_string())?;
         if changed != 1 {
             return Err("task_not_found".to_string());
         }
+        self.with_writes(&["tasks"], || {
+            tx.commit().map_err(|_| "task_delete_failed".to_string())
+        })?;
         Ok(())
     }
 
@@ -605,7 +843,7 @@ impl TaskStore {
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| "legacy_migration_transaction_failed".to_string())?;
         if let Some(count) = transaction
             .query_row(
@@ -640,9 +878,18 @@ impl TaskStore {
                 ],
             )
             .map_err(|_| "legacy_migration_record_failed".to_string())?;
-        transaction
-            .commit()
-            .map_err(|_| "legacy_migration_commit_failed".to_string())?;
+        self.with_writes(
+            if raw_payload.is_some() {
+                &["tasks"]
+            } else {
+                &[]
+            },
+            || {
+                transaction
+                    .commit()
+                    .map_err(|_| "legacy_migration_commit_failed".to_string())
+            },
+        )?;
 
         Ok(LegacyMigrationResult::Migrated {
             imported_count: records.len(),
@@ -659,53 +906,103 @@ impl TaskStore {
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| "app_state_transaction_failed".to_string())?;
 
         let migration_completed = transaction
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM app_state_bootstrap WHERE singleton = 1)",
+                &self.state_sql(
+                    "SELECT EXISTS(SELECT 1 FROM app_state_bootstrap WHERE singleton = 1)",
+                ),
                 [],
                 |row| row.get::<_, bool>(0),
             )
             .map_err(|_| "app_state_migration_read_failed".to_string())?;
 
+        let mut modules = Vec::new();
         if !migration_completed {
+            let current = read_app_state(&transaction)?;
             for (key, value) in legacy {
                 validate_app_state(&key, &value)?;
+                if !current.contains_key(&key) {
+                    modules.extend(crate::capabilities::changed_modules(
+                        &key,
+                        None,
+                        Some(&value),
+                    )?);
+                }
                 transaction
                     .execute(
-                        r#"
+                        &self.state_sql(
+                            r#"
                         INSERT OR IGNORE INTO app_state(key, value_json, updated_at)
                         VALUES (?1, ?2, ?3)
                         "#,
+                        ),
                         params![key, serialize_app_state(&value)?, now_timestamp()],
                     )
                     .map_err(|_| "app_state_migration_failed".to_string())?;
             }
             transaction
                 .execute(
-                    "INSERT INTO app_state_bootstrap(singleton, completed_at) VALUES (1, ?1)",
+                    &self.state_sql(
+                        "INSERT INTO app_state_bootstrap(singleton, completed_at) VALUES (1, ?1)",
+                    ),
                     params![now_timestamp()],
                 )
                 .map_err(|_| "app_state_migration_record_failed".to_string())?;
         }
 
-        let state = read_app_state(&transaction)?;
-        transaction
-            .commit()
-            .map_err(|_| "app_state_commit_failed".to_string())?;
+        let mut state = read_app_state(&transaction)?;
+        let bead_migration = self.prepare_bead_migration(&transaction, &state)?;
+        if bead_migration.is_some() {
+            modules.push("bead-studio");
+        }
+        if migration_completed && bead_migration.is_none() {
+            transaction
+                .commit()
+                .map_err(|_| "app_state_commit_failed".to_string())?;
+        } else {
+            self.with_writes(&modules, || {
+                if let Some(migration) = &bead_migration {
+                    self.record_bead_protection(&transaction, migration, true)?;
+                    transaction.execute(
+                        &self.state_sql("INSERT INTO app_state(key,value_json,updated_at) VALUES(?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at"),
+                        params!["tideplan.bead-works.v1", serialize_app_state(&migration.document)?, now_timestamp()],
+                    ).map_err(|_| "拼豆作品迁移失败，原资料未修改")?;
+                    state.insert("tideplan.bead-works.v1".into(), migration.document.clone());
+                }
+                transaction
+                    .commit()
+                    .map_err(|_| "app_state_commit_failed".to_string())
+            })?;
+        }
         Ok(state)
     }
 
     pub fn set_app_state(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
         validate_app_state(key, &value)?;
-        let connection = self
+        let mut connection = self
             .connection
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
-        connection
-            .execute(
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "app_state_write_failed".to_string())?;
+        let current = read_app_state(&tx)?;
+        let mut modules =
+            crate::capabilities::changed_modules(key, current.get(key), Some(&value))?;
+        let bead_protection =
+            if matches!(key, "tideplan.bead-pattern.v1" | "tideplan.bead-works.v1") {
+                self.prepare_bead_migration(&tx, &current)?
+            } else {
+                None
+            };
+        if bead_protection.is_some() {
+            modules.push("bead-studio");
+        }
+        tx.execute(
+            &self.state_sql(
                 r#"
                 INSERT INTO app_state(key, value_json, updated_at)
                 VALUES (?1, ?2, ?3)
@@ -713,9 +1010,21 @@ impl TaskStore {
                     value_json = excluded.value_json,
                     updated_at = excluded.updated_at
                 "#,
-                params![key, serialize_app_state(&value)?, now_timestamp()],
-            )
-            .map_err(|_| "app_state_write_failed".to_string())?;
+            ),
+            params![key, serialize_app_state(&value)?, now_timestamp()],
+        )
+        .map_err(|_| "app_state_write_failed".to_string())?;
+        self.with_writes(&modules, || {
+            if let Some(protection) = &bead_protection {
+                self.record_bead_protection(
+                    &tx,
+                    protection,
+                    key == "tideplan.bead-works.v1" && !value.is_null(),
+                )?;
+            }
+            tx.commit()
+                .map_err(|_| "app_state_write_failed".to_string())
+        })?;
         Ok(())
     }
 
@@ -740,14 +1049,28 @@ impl TaskStore {
             .connection
             .lock()
             .map_err(|_| "database_lock_failed".to_string())?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|_| "backup_restore_transaction_failed".to_string())?;
         // Hold the same database lock across snapshot and restore so the recovery
         // copy represents precisely the data about to be replaced.
         let previous = DataBackup {
             schema_version: BACKUP_SCHEMA_VERSION.to_string(),
             created_at: now_timestamp(),
-            tasks: list_tasks_from_connection(&connection)?,
-            app_state: read_app_state(&connection)?,
+            tasks: list_tasks_from_connection(&transaction)?,
+            app_state: read_app_state(&transaction)?,
         };
+        let mut modules = Vec::new();
+        if previous.tasks != backup.tasks {
+            modules.push("tasks");
+        }
+        for key in previous.app_state.keys().chain(backup.app_state.keys()) {
+            modules.extend(crate::capabilities::changed_modules(
+                key,
+                previous.app_state.get(key),
+                backup.app_state.get(key),
+            )?);
+        }
         fs::create_dir_all(&self.backup_dir).map_err(|_| "backup_snapshot_failed")?;
         let snapshot = self
             .backup_dir
@@ -771,14 +1094,11 @@ impl TaskStore {
         fs::File::open(&self.backup_dir)
             .and_then(|dir| dir.sync_all())
             .map_err(|_| "backup_snapshot_failed")?;
-        let transaction = connection
-            .transaction()
-            .map_err(|_| "backup_restore_transaction_failed".to_string())?;
         transaction
             .execute("DELETE FROM tasks", [])
             .map_err(|_| "backup_restore_failed".to_string())?;
         transaction
-            .execute("DELETE FROM app_state", [])
+            .execute(&self.state_sql("DELETE FROM app_state"), [])
             .map_err(|_| "backup_restore_failed".to_string())?;
 
         for task in &backup.tasks {
@@ -788,22 +1108,33 @@ impl TaskStore {
         for (key, value) in &backup.app_state {
             transaction
                 .execute(
-                    "INSERT INTO app_state(key, value_json, updated_at) VALUES (?1, ?2, ?3)",
+                    &self.state_sql(
+                        "INSERT INTO app_state(key, value_json, updated_at) VALUES (?1, ?2, ?3)",
+                    ),
                     params![key, serialize_app_state(value)?, now_timestamp()],
                 )
                 .map_err(|_| "backup_state_restore_failed".to_string())?;
         }
         transaction
             .execute(
-                "INSERT OR REPLACE INTO app_state_bootstrap(singleton, completed_at) VALUES (1, ?1)",
+                &self.state_sql("INSERT OR REPLACE INTO app_state_bootstrap(singleton, completed_at) VALUES (1, ?1)"),
                 params![now_timestamp()],
             )
             .map_err(|_| "backup_state_restore_failed".to_string())?;
-        transaction
-            .commit()
-            .map_err(|_| "backup_restore_commit_failed".to_string())?;
+        self.with_writes(&modules, || {
+            transaction
+                .commit()
+                .map_err(|_| "backup_restore_commit_failed".to_string())
+        })?;
         Ok(snapshot.to_string_lossy().into_owned())
     }
+}
+
+fn read_task(connection: &Connection, id: &str) -> Result<TaskRecord, String> {
+    connection.query_row(
+        "SELECT schema_version, id, title, notes, horizon, priority, start_date, due_date, created_at, updated_at, completed_at, origin_kind, origin_label, origin_reference FROM tasks WHERE id=?1",
+        [id], task_from_row,
+    ).optional().map_err(|_| "task_read_failed".to_string())?.ok_or_else(|| "task_not_found".into())
 }
 
 fn list_tasks_from_connection(connection: &Connection) -> Result<Vec<TaskRecord>, String> {
@@ -829,6 +1160,9 @@ fn validate_app_state(key: &str, value: &serde_json::Value) -> Result<(), String
     if key == "tideplan.infrastructure.v1" && !crate::infrastructure::valid_document(value) {
         return Err("主机档案数据无效，原记录未修改".into());
     }
+    if key == "tideplan.bead-works.v1" && !crate::backup_validation::valid(key, value) {
+        return Err("拼豆作品数据无效，原记录未修改".into());
+    }
     if !APP_STATE_KEYS.contains(&key) {
         return Err("app_state_key_invalid".to_string());
     }
@@ -843,8 +1177,20 @@ fn serialize_app_state(value: &serde_json::Value) -> Result<String, String> {
 }
 
 fn read_app_state(connection: &Connection) -> Result<HashMap<String, serde_json::Value>, String> {
+    let personal: bool = connection
+        .query_row(
+            "SELECT count(*)>0 FROM pragma_database_list WHERE name='personal_state'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let sql = if personal {
+        "SELECT key, value_json FROM personal_state.app_state ORDER BY key"
+    } else {
+        "SELECT key, value_json FROM app_state ORDER BY key"
+    };
     let mut statement = connection
-        .prepare("SELECT key, value_json FROM app_state ORDER BY key")
+        .prepare(sql)
         .map_err(|_| "app_state_read_failed".to_string())?;
     let rows = statement
         .query_map([], |row| {
@@ -1155,83 +1501,157 @@ fn now_timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-#[tauri::command]
-pub fn list_tasks(store: tauri::State<'_, TaskStore>) -> Result<Vec<TaskRecord>, String> {
-    store.list()
+pub(crate) async fn blocking_store<T: Send + 'static>(
+    app: tauri::AppHandle,
+    operation: impl FnOnce(&TaskStore) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    use tauri::Manager;
+    tauri::async_runtime::spawn_blocking(move || {
+        let scope = app
+            .try_state::<crate::personal_workspaces::PersonalRuntime>()
+            .map(|_| "main".to_string());
+        let _permit = crate::personal_workspaces::scene_operation(&app, &scope)?;
+        operation(app.state::<TaskStore>().inner())
+    })
+    .await
+    .map_err(|_| "database_operation_interrupted".to_string())?
 }
 
 #[tauri::command]
-pub fn get_task(id: String, store: tauri::State<'_, TaskStore>) -> Result<TaskRecord, String> {
-    store.get(&id)
+pub async fn list_tasks(app: tauri::AppHandle) -> Result<Vec<TaskRecord>, String> {
+    blocking_store(app, |store| store.list()).await
 }
 
 #[tauri::command]
-pub fn create_task(
+pub async fn get_task(id: String, app: tauri::AppHandle) -> Result<TaskRecord, String> {
+    blocking_store(app, move |store| store.get(&id)).await
+}
+
+#[tauri::command]
+pub async fn create_task(
     mutation: TaskMutation,
-    store: tauri::State<'_, TaskStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
+    task_owner: Option<String>,
 ) -> Result<TaskRecord, String> {
-    store.create(mutation)
+    if personal_scope.is_some() && task_owner.is_none() {
+        return Err("请选择任务所属工作区或待定".into());
+    }
+    crate::personal_workspaces::scoped_store(app, personal_scope, move |store| {
+        store.create_assigned(mutation, task_owner)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn update_task(
+pub async fn update_task(
     id: String,
     mutation: TaskMutation,
-    store: tauri::State<'_, TaskStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
+    task_owner: Option<String>,
 ) -> Result<TaskRecord, String> {
-    store.update(&id, mutation)
+    if personal_scope.is_some() && task_owner.is_none() {
+        return Err("请选择任务所属工作区或待定".into());
+    }
+    crate::personal_workspaces::scoped_store(app, personal_scope, move |store| {
+        store.update_assigned(&id, mutation, task_owner)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_task_completed(
+pub async fn set_task_completed(
     id: String,
     completed: bool,
-    store: tauri::State<'_, TaskStore>,
+    app: tauri::AppHandle,
 ) -> Result<TaskRecord, String> {
-    store.set_completed(&id, completed)
+    blocking_store(app, move |store| store.set_completed(&id, completed)).await
 }
 
 #[tauri::command]
-pub fn delete_task(id: String, store: tauri::State<'_, TaskStore>) -> Result<(), String> {
-    store.delete(&id)
+pub async fn delete_task(id: String, app: tauri::AppHandle) -> Result<(), String> {
+    blocking_store(app, move |store| store.delete(&id)).await
 }
 
 #[tauri::command]
-pub fn migrate_legacy_tasks(
+pub async fn migrate_legacy_tasks(
     raw_payload: Option<String>,
-    store: tauri::State<'_, TaskStore>,
+    app: tauri::AppHandle,
 ) -> Result<LegacyMigrationResult, String> {
-    store.migrate_legacy(raw_payload.as_deref())
+    blocking_store(app, move |store| {
+        store.migrate_legacy(raw_payload.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn bootstrap_app_state(
+pub async fn bootstrap_app_state(
     legacy: HashMap<String, serde_json::Value>,
-    store: tauri::State<'_, TaskStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<HashMap<String, serde_json::Value>, String> {
-    store.bootstrap_app_state(legacy)
+    let original = app.clone();
+    let mut state =
+        crate::personal_workspaces::scoped_store(app, personal_scope.clone(), move |store| {
+            store.bootstrap_app_state(legacy)
+        })
+        .await?;
+    if personal_scope.is_some() {
+        use tauri::Manager;
+        if let Some(reminders) = original
+            .state::<TaskStore>()
+            .export_backup()?
+            .app_state
+            .get("tideplan.reminders.v1")
+        {
+            state.insert("tideplan.reminders.v1".into(), reminders.clone());
+        }
+    }
+    Ok(state)
 }
 
 #[tauri::command]
-pub fn set_app_state(
+pub async fn set_app_state(
     key: String,
     value: serde_json::Value,
-    store: tauri::State<'_, TaskStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<(), String> {
-    store.set_app_state(&key, value)
+    let original = app.clone();
+    let scope = personal_scope.clone();
+    crate::personal_workspaces::scoped_store(app, personal_scope, move |store| {
+        if let Some(scope) = &scope {
+            use tauri::Manager;
+            let before = store.export_backup()?.app_state;
+            for module in
+                crate::capabilities::changed_modules(&key, before.get(&key), Some(&value))?
+            {
+                original
+                    .state::<crate::personal_workspaces::PersonalRuntime>()
+                    .require_module(scope, module)?;
+            }
+        }
+        store.set_app_state(&key, value)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn export_data_backup(store: tauri::State<'_, TaskStore>) -> Result<DataBackup, String> {
-    store.export_backup()
+pub async fn export_data_backup(
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
+) -> Result<DataBackup, String> {
+    crate::personal_workspaces::scoped_store(app, personal_scope, |store| store.export_backup())
+        .await
 }
 
 #[tauri::command]
-pub fn restore_data_backup(
+pub async fn restore_data_backup(
     backup: DataBackup,
-    store: tauri::State<'_, TaskStore>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
-    store.restore_backup(backup)
+    blocking_store(app, move |store| store.restore_backup(backup)).await
 }
 
 #[cfg(test)]
@@ -1821,6 +2241,32 @@ mod tests {
         let store = test_store(&temp);
         let restored = store.bootstrap_app_state(HashMap::new()).unwrap();
         assert_eq!(restored.get("tideplan.bead-pattern.v1"), Some(&document));
+    }
+
+    #[test]
+    fn bead_works_survive_backup_restore_and_reject_archived_active_work() {
+        let temp = TempDir::new().unwrap();
+        let pattern = serde_json::json!({"version":1,"title":"作品","width":1,"height":1,"palette":[{"hex":"#ed8467","name":"Coral"}],"cells":[0]});
+        let works = serde_json::json!({"version":1,"activeId":"work-1","works":[{"id":"work-1","title":"作品","createdAt":"2026-01-01","updatedAt":"2026-01-01","archived":false,"currentVersionId":"version-1","completedCells":[],"versions":[{"id":"version-1","label":"初始图纸","createdAt":"2026-01-01","pattern":pattern}]}]});
+        let store = test_store(&temp);
+        store
+            .set_app_state("tideplan.bead-works.v1", works.clone())
+            .unwrap();
+        let backup = store.export_backup().unwrap();
+        store
+            .set_app_state("tideplan.bead-works.v1", serde_json::Value::Null)
+            .unwrap();
+        store.restore_backup(backup).unwrap();
+        assert_eq!(
+            store
+                .bootstrap_app_state(HashMap::new())
+                .unwrap()
+                .get("tideplan.bead-works.v1"),
+            Some(&works)
+        );
+        let mut bad = works;
+        bad["works"][0]["archived"] = serde_json::json!(true);
+        assert!(store.set_app_state("tideplan.bead-works.v1", bad).is_err());
     }
 
     #[test]

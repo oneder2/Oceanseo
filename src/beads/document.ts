@@ -9,6 +9,7 @@ export interface Proposal {
   label: string;
   message: string;
   after: BeadPattern;
+  allowUnchanged?: boolean;
 }
 export interface DocumentState {
   present: BeadPattern;
@@ -18,6 +19,7 @@ export interface DocumentState {
 }
 export type DocumentAction =
   | { type: "commit"; label: string; after: BeadPattern }
+  | { type: "replace"; present: BeadPattern }
   | { type: "propose"; proposal: Proposal }
   | { type: "apply" | "discard" | "undo" | "redo" };
 export const HISTORY_LIMIT = 20;
@@ -66,6 +68,7 @@ export function documentReducer(
   action: DocumentAction,
 ): DocumentState {
   if (action.type === "discard") return { ...state, proposal: null };
+  if (action.type === "replace") return createDocument(action.present);
   if (action.type === "apply") {
     if (!state.proposal) return state;
     return commit(
@@ -81,7 +84,7 @@ export function documentReducer(
   if (action.type === "propose") {
     if (
       !isPattern(action.proposal.after) ||
-      samePattern(state.present, action.proposal.after)
+      (!action.proposal.allowUnchanged && samePattern(state.present, action.proposal.after))
     )
       return state;
     return { ...state, proposal: action.proposal };

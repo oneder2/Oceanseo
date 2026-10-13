@@ -40,10 +40,21 @@ fn schema(kind: &str) -> Result<Value, String> {
 #[tauri::command]
 pub async fn run_planning_agent(
     kind: String,
-    context: Value,
+    mut context: Value,
     store: tauri::State<'_, AiSettingsStore>,
+    runtime: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
 ) -> Result<Value, String> {
-    run_plan(store.resolve()?, kind, context).await
+    crate::capabilities::filter_context(&mut context, &runtime.status(&profile)?);
+    let module = crate::capabilities::planning_module(&kind).ok_or("未知规划模块")?;
+    runtime
+        .while_authorized(
+            &profile,
+            module,
+            "ai",
+            run_plan(store.resolve()?, kind, context),
+        )
+        .await
 }
 
 async fn run_plan(

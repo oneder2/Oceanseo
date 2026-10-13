@@ -5,14 +5,21 @@
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tile.openstreetmap.org; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
     },
-    "windows": [{
-      "label": "main",
-      "title": "Oceanseo",
-      "transparent": false,
-      "backgroundColor": "#f1f7f5"
-    }]
+    "windows": [
+      {
+        "label": "main",
+        "title": "Oceanseo",
+        "transparent": false,
+        "backgroundColor": "#f1f7f5"
+      }
+    ]
   },
   "bundle": {
-    "android": { "minSdkVersion": 28, "versionCode": 1800, "debugApplicationIdSuffix": ".debug" }
-  }
+    "android": {
+      "minSdkVersion": 28,
+      "versionCode": 1800,
+      "debugApplicationIdSuffix": ".debug"
+    }
+  },
+  "version": "0.18.0"
 }

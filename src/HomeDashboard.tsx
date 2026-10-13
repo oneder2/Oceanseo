@@ -14,6 +14,7 @@ import {
 import { countdownDays } from "./countdownStore";
 import type { HostEvent } from "./infrastructure/model";
 import { platform } from "./platform";
+import { canView, can } from "./modules/capabilities";
 import { dateFromKey, dateKey } from "./dateUtils";
 import type { WorkDashboard } from "./workMonitorStore";
 import { addDays, type LifeEvent } from "./life/model";
@@ -99,22 +100,22 @@ export default function HomeDashboard({
     <section className="home-dashboard" aria-label="今日总览">
       {!!hostEvents.filter(e=>e.date<=addDays(today,e.remindDays)).length&&<section className="infra-attention" aria-label="主机期限提醒"><header><strong>主机与服务 · 近期需处理</strong><button className="secondary-button" onClick={()=>onNavigate("infrastructure")}>打开面板</button></header>{hostEvents.filter(e=>e.date<=addDays(today,e.remindDays)).slice(0,3).map(e=><button key={e.id} className="infra-text-button" onClick={()=>onOpenHost?.(e)}>{e.title} · {e.date}{e.date<today?"（已逾期）":""}</button>)}</section>}
       <nav className="rhythm-route" aria-label="今日状态导航">
-        <button type="button" onClick={() => onNavigate("today")}>
+        {canView("today") && <button type="button" onClick={() => onNavigate("today")}>
           <span className="route-icon route-coral"><ListTodo size={16} /></span>
           <span><small>TODAY</small><strong>{focusTasks.length || activeTasks.length} 项计划</strong></span>
           <ArrowRight size={14} />
-        </button>
-        <button type="button" onClick={() => onNavigate("countdowns")}>
+        </button>}
+        {canView("countdowns") && <button type="button" onClick={() => onNavigate("countdowns")}>
           <span className="route-icon route-blue"><Hourglass size={16} /></span>
           <span><small>DATES</small><strong>{nearbyCountdowns[0] ? nearbyCountdowns[0].days === 0 ? "关键日期就在今天" : `最近还有 ${nearbyCountdowns[0].days} 天` : "暂无临近日期"}</strong></span>
           <ArrowRight size={14} />
-        </button>
-        <button type="button" onClick={() => onNavigate("shopping-list")}>
+        </button>}
+        {canView("shopping-list") && <button type="button" onClick={() => onNavigate("shopping-list")}>
           <span className="route-icon route-gold"><ShoppingBasket size={16} /></span>
           <span><small>LIST</small><strong>{uncheckedPurchases} 项待采购</strong></span>
           <ArrowRight size={14} />
-        </button>
-        {platform.workMonitor && <button type="button" onClick={() => onNavigate("work-monitor")}>
+        </button>}
+        {platform.workMonitor && canView("work-monitor") && <button type="button" onClick={() => onNavigate("work-monitor")}>
           <span className="route-icon route-sage"><FolderGit2 size={16} /></span>
           <span><small>WORK</small><strong>{pendingDrafts ? `${pendingDrafts} 项待审核` : workDashboard ? "同步状态平稳" : "等待项目检查"}</strong></span>
           <ArrowRight size={14} />
@@ -122,13 +123,13 @@ export default function HomeDashboard({
       </nav>
 
       <div className="home-grid">
-        <section className="home-focus">
+        {can("tasks") && <section className="home-focus">
           <header className="home-section-head">
             <div>
               <span>{focusTasks.length ? "需要处理" : "接下来"}</span>
               <h2>{focusTasks.length ? "今天的重心" : "最近的计划"}</h2>
             </div>
-            <button className="secondary-button" type="button" onClick={onNewTask}><Plus size={15} />添加计划</button>
+            {can("tasks", "write") && <button className="secondary-button" type="button" onClick={onNewTask}><Plus size={15} />添加计划</button>}
           </header>
           <div className="home-task-list">
             {displayedTasks.map((task) => {
@@ -154,15 +155,15 @@ export default function HomeDashboard({
             <span><Clock3 size={13} />{platform.mobile && reminderSettings.enabled && !reminderAvailable ? "提醒待授权 · 前往设置开启" : nextReminderLabel(reminderSettings)}</span>
             <button type="button" onClick={() => onNavigate("all")}>查看所有计划<ArrowRight size={13} /></button>
           </footer>
-        </section>
+        </section>}
 
         <div className="home-side">
-          <section className="home-side-section">
+          {(canView("fitness") || canView("travel")) && <section className="home-side-section">
             <header className="home-section-head compact"><div><span>未来七天 · {upcomingLife.length} 项安排</span><h2>训练与旅行</h2></div><button onClick={() => onNavigate("calendar")}>日历<ArrowRight size={13}/></button></header>
             {upcomingLife.slice(0, 3).map(event => <button key={`${event.kind}:${event.id}`} className="home-task-row" onClick={() => onOpenLife(event)}><span className="home-task-status">{event.done ? <CheckCircle2 size={16}/> : <CalendarClock size={16}/>}</span><span><strong>{event.title}</strong><small>{compactDate(event.date)} · {event.kind === "training" ? event.done ? "训练已完成" : "训练待清点" : "旅行安排"}</small></span><ArrowRight size={14}/></button>)}
             {!upcomingLife.length && <p className="home-inline-empty">未来七天暂无训练或旅行安排。</p>}
-          </section>
-          <section className="home-side-section home-dates">
+          </section>}
+          {canView("countdowns") && <section className="home-side-section home-dates">
             <header className="home-section-head compact">
               <div><span>时间标记</span><h2>临近日期</h2></div>
               <button type="button" onClick={() => onNavigate("countdowns")}>全部<ArrowRight size={13} /></button>
@@ -176,20 +177,20 @@ export default function HomeDashboard({
               ))}
               {!nearbyCountdowns.length && <p className="home-inline-empty">还没有未来的关键日期。</p>}
             </div>
-          </section>
+          </section>}
 
-          <section className="home-side-section home-life">
+          {(canView("meal-planner") || canView("shopping-list")) && <section className="home-side-section home-life">
             <header className="home-section-head compact">
               <div><span>生活安排</span><h2>本周餐桌</h2></div>
-              <button type="button" onClick={() => onNavigate("meal-planner")}>打开<ArrowRight size={13} /></button>
+              <button type="button" onClick={() => onNavigate(canView("meal-planner") ? "meal-planner" : "shopping-list")}>打开<ArrowRight size={13} /></button>
             </header>
             <button className="home-life-line" type="button" onClick={() => onNavigate(mealPlan ? "meal-planner" : "shopping-list")}>
               <span className="route-icon route-gold">{mealPlan ? <ChefHat size={16} /> : <ShoppingBasket size={16} />}</span>
               <span><strong>{mealPlan?.planTitle ?? `${uncheckedPurchases} 项物品等待采购`}</strong><small>{mealPlan?.weekSummary ?? "生成食谱或继续整理采购清单"}</small></span>
             </button>
-          </section>
+          </section>}
 
-          {platform.workMonitor && <section className="home-side-section home-work">
+          {platform.workMonitor && canView("work-monitor") && <section className="home-side-section home-work">
             <header className="home-section-head compact">
               <div><span>项目脉搏</span><h2>工作观察</h2></div>
               <button type="button" onClick={() => onNavigate("work-monitor")}>进入<ArrowRight size={13} /></button>

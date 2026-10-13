@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "version": "1.0.0",
+  "app": {
+    "security": {
+      "capabilities": [
+        "default",
+        {
+          "identifier": "personal-window-resize",
+          "description": "Allow resizing the personal Linux frameless window from its edges",
+          "platforms": [
+            "linux"
+          ],
+          "windows": [
+            "main"
+          ],
+          "permissions": [
+            "core:window:allow-start-resize-dragging"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "shortDescription": "工作区、模块与共享待办的个人桌面助手",
+    "longDescription": "Linux 个人版：一个固定主主页，自由创建场景工作区，按用途添加工具。",
+    "targets": [
+      "deb"
+    ],
+    "license": "MIT",
+    "linux": {
+      "deb": {
+        "files": {
+          "usr/share/doc/tideplan/LICENSE": "../LICENSE",
+          "usr/share/doc/tideplan/THIRD_PARTY_NOTICES.md": "../THIRD_PARTY_NOTICES.md",
+          "usr/share/doc/tideplan/public/licenses": "../public/licenses",
+          "usr/share/doc/tideplan/public/brand/Outfit-OFL.txt": "../public/brand/Outfit-OFL.txt"
+        }
+      }
+    }
+  }
+}

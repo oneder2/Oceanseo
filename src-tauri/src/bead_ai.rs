@@ -193,22 +193,40 @@ async fn generate(ai: ResolvedAiSettings, request: ImageRequest) -> Result<Gener
 pub async fn analyze_bead_image(
     request: ImageInput,
     store: tauri::State<'_, AiSettingsStore>,
+    policy: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
 ) -> Result<Subject, String> {
     let _permit = ACTIVE
         .try_acquire()
         .map_err(|_| "上一笔图片请求仍在处理中，请稍后再试")?;
-    analyze(store.resolve()?, request).await
+    policy
+        .while_authorized(
+            &profile,
+            "bead-studio",
+            "ai",
+            analyze(store.resolve()?, request),
+        )
+        .await
 }
 
 #[tauri::command]
 pub async fn generate_bead_image(
     request: ImageRequest,
     store: tauri::State<'_, AiSettingsStore>,
+    policy: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
 ) -> Result<GeneratedImage, String> {
     let _permit = ACTIVE
         .try_acquire()
         .map_err(|_| "上一笔图片请求仍在处理中，请稍后再试")?;
-    generate(store.resolve()?, request).await
+    policy
+        .while_authorized(
+            &profile,
+            "bead-studio",
+            "ai",
+            generate(store.resolve()?, request),
+        )
+        .await
 }
 
 #[cfg(test)]

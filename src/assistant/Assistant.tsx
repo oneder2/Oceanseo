@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { canShareHistory, requireModule } from "../modules/capabilities";
 import {
   ArrowUp,
   ArrowUpRight,
@@ -166,6 +167,7 @@ export default function Assistant({
       draft: "",
     }));
     try {
+      requireModule("goals", "ai");
       const result = await invoke<{
         content: string;
         actions: AgentAction[];
@@ -174,7 +176,7 @@ export default function Assistant({
         request: {
           requestId,
           persona: snapshot.persona,
-          history: historyForRequest(snapshot.messages),
+          history: canShareHistory() ? historyForRequest(snapshot.messages) : [],
           message,
           context: makeContext(data, snapshot.scopes),
         },

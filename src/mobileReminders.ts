@@ -3,6 +3,7 @@ import type { ReminderSettings } from "./types";
 
 export interface MobileReminderStatus {
   permission: boolean;
+  profileAllowed?: boolean;
   scheduled: boolean;
   appNotifications: boolean;
   channelEnabled: boolean;
@@ -14,6 +15,7 @@ export interface MobileReminderStatus {
 
 export function mobileReminderMessage(enabled: boolean, status: MobileReminderStatus) {
   if (!enabled) return "每日提醒已关闭。测试通知不代表开启每日提醒。";
+  if (status.profileAllowed === false) return "当前资料空间的每日提醒已暂停。返回账号页面确认登录和资料空间；联网后会自动复查权限。";
   if (!status.appNotifications) return "应用通知未获准。请授权通知，或打开系统通知设置。";
   if (!status.channelEnabled) return "“每日计划提醒”频道已关闭，请在频道设置中开启。";
   if (!status.permission) return "尚未获准发送通知，请检查系统通知设置。";

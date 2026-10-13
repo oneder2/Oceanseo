@@ -7,6 +7,7 @@ import {
   Hand,
   PaintBucket,
   Palette,
+  PackageOpen,
   Pencil,
   Pipette,
   Redo2,
@@ -27,22 +28,25 @@ import {
 import { samePattern, type Proposal } from "./document";
 import { floodFill } from "./edit";
 import { useBeadDocument } from "./useBeadDocument";
+import { findActiveWork, isDeletedWork, isLiveWork } from "./works";
 import { useImageImport } from "./useImageImport";
-import { exportPattern } from "./export";
+import { exportPattern, exportPatternPdf } from "./export";
 import BeadCanvas, { type Tool } from "./BeadCanvas";
 import ColorPanel from "./ColorPanel";
 import ImportPanel from "./ImportPanel";
 import DocumentPanel from "./DocumentPanel";
 import ShapePanel from "./ShapePanel";
+import MaterialPanel from "./MaterialPanel";
 import PreviewDialog from "./PreviewDialog";
 import "./studio.css";
 
-type Panel = "colors" | "import" | "shape" | "document" | "view";
+type Panel = "colors" | "import" | "shape" | "document" | "materials" | "view";
 const panels: { id: Panel; label: string; icon: typeof Palette }[] = [
   { id: "colors", label: "豆色", icon: Palette },
   { id: "import", label: "导入", icon: Upload },
   { id: "shape", label: "填充与加边", icon: ScanLine },
   { id: "document", label: "尺寸", icon: Ruler },
+  { id: "materials", label: "材料", icon: PackageOpen },
   { id: "view", label: "显示", icon: Eye },
 ];
 const tools: {
@@ -130,7 +134,7 @@ export default function BeadWorkbench({
 }: {
   onSettings?: () => void;
 }) {
-  const { state, dispatch, saveStatus } = useBeadDocument();
+  const { state, dispatch, restoreProgress, saveStatus, works, activeWorkId, selectWork, createNewWork, renameActiveWork, archiveCurrentWork, restoreArchivedWork, restoreSavedVersion, updateInventory } = useBeadDocument();
   const pattern = state.present;
   const [tool, setTool] = useState<Tool>("pan"),
     [selection, setSelection] = useState(0);
@@ -141,7 +145,8 @@ export default function BeadWorkbench({
     [contours, setContours] = useState(true);
   const [notice, notify] = useState(""),
     [exporting, setExporting] = useState(false),
-    [gesture, setGesture] = useState(false);
+    [gesture, setGesture] = useState(false),
+    [showWorkHistory, setShowWorkHistory] = useState(false);
   const root = useRef<HTMLElement>(null),
     inspector = useRef<HTMLElement>(null),
     trigger = useRef<HTMLElement | null>(null);
@@ -201,6 +206,19 @@ export default function BeadWorkbench({
       notify(await exportPattern(pattern));
     } catch (e) {
       notify(e instanceof Error ? e.message : "导出失败，请重新选择位置");
+    } finally {
+      exportingRef.current = false;
+      setExporting(false);
+    }
+  }
+  async function exportPdf() {
+    if (controlsLocked || exportingRef.current) return;
+    exportingRef.current = true;
+    setExporting(true);
+    try {
+      notify(await exportPatternPdf(pattern));
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "PDF 导出失败，请重新选择位置");
     } finally {
       exportingRef.current = false;
       setExporting(false);
@@ -272,7 +290,10 @@ export default function BeadWorkbench({
           <DocumentTitle
             value={pattern.title}
             disabled={controlsLocked}
-            commit={(title) => commit("重命名图纸", { ...pattern, title })}
+            commit={(title) => {
+              renameActiveWork(title);
+              commit("重命名作品", { ...pattern, title });
+            }}
           />
           <small
             title={saveStatus}
@@ -301,8 +322,46 @@ export default function BeadWorkbench({
             <Download size={16} />
             <span>{exporting ? "导出中…" : "导出 PNG"}</span>
           </button>
+          <button
+            className="bead-export"
+            disabled={controlsLocked}
+            onClick={() => void exportPdf()}
+            title="导出带坐标和材料图例的 A4 分页 PDF"
+          >
+            <Download size={16} />
+            <span>导出 A4 PDF</span>
+          </button>
         </div>
       </header>
+      <div className="bead-work-switcher" aria-label="作品管理">
+        <label>当前作品
+          <select aria-label="选择作品" value={activeWorkId} disabled={controlsLocked} onChange={event => selectWork(event.target.value)}>
+            {!findActiveWork(works) && <option value="">请新建或恢复作品</option>}
+            {works.works.filter(isLiveWork).map(work => <option key={work.id} value={work.id}>{work.title}</option>)}
+          </select>
+        </label>
+        <button type="button" className="secondary-button" disabled={controlsLocked} onClick={createNewWork}>新建作品</button>
+        <button type="button" className="secondary-button" disabled={controlsLocked || works.works.filter(work => !work.archived).length <= 1} onClick={() => {
+          if (archiveCurrentWork()) notify("作品已归档，当前图纸已切换到下一件作品。");
+          else notify("至少保留一件未归档作品。");
+        }}>归档当前</button>
+        <button type="button" className="secondary-button" aria-expanded={showWorkHistory} disabled={controlsLocked} onClick={() => setShowWorkHistory(value => !value)}>作品记录</button>
+        <span>{works.works.filter(isLiveWork).length} 件未归档作品 · 自动保留最近 20 个编辑版本</span>
+        {showWorkHistory && <div className="bead-work-history" role="region" aria-label="作品版本和归档">
+          <div className="bead-work-history-title">版本记录</div>
+          {(works.works.find(work => work.id === activeWorkId)?.versions ?? []).slice().reverse().map(version => <div className="bead-work-history-row" key={version.id}>
+            <span>{version.label}<small>{new Date(version.createdAt).toLocaleString()}</small></span>
+            <button type="button" disabled={controlsLocked || version.id === works.works.find(work => work.id === activeWorkId)?.currentVersionId} onClick={() => restoreSavedVersion(version.id)}>恢复</button>
+          </div>)}
+          {works.works.some(work => work.archived && !isDeletedWork(work)) && <>
+            <div className="bead-work-history-title">已归档作品</div>
+            {works.works.filter(work => work.archived && !isDeletedWork(work)).map(work => <div className="bead-work-history-row" key={work.id}>
+              <span>{work.title}<small>已归档 · {new Date(work.updatedAt).toLocaleDateString()}</small></span>
+              <button type="button" disabled={controlsLocked} onClick={() => { restoreArchivedWork(work.id); notify("作品已恢复并设为当前作品。"); }}>恢复作品</button>
+            </div>)}
+          </>}
+        </div>}
+      </div>
       <div className="bead-command-bar">
         <div className="bead-tool-group" role="toolbar" aria-label="画布工具">
           {tools.map((t) => (
@@ -516,6 +575,9 @@ export default function BeadWorkbench({
                 始终包含完整图纸、豆色编号、边缘辅助线、坐标、尺寸和用量。不会导出选色定位标记，不受当前缩放和平移影响。
               </p>
             </div>
+            <fieldset disabled={controlsLocked} hidden={panel !== "materials"} id="bead-panel-materials">
+              <MaterialPanel pattern={pattern} inventory={works.inventory} updateInventory={updateInventory} />
+            </fieldset>
           </div>
         </aside>
         {(notice || busy) && (
@@ -555,11 +617,12 @@ export default function BeadWorkbench({
         <PreviewDialog
           before={pattern}
           proposal={state.proposal}
+          work={findActiveWork(works)}
+          restoreProgress={restoreProgress}
           cancel={() => dispatch({ type: "discard" })}
           apply={() => {
             const label = state.proposal!.label;
-            dispatch({ type: "apply" });
-            notify(`${label}已应用，可撤销`);
+            if (dispatch({ type: "apply" })) notify(state.proposal?.allowUnchanged ? "版本已恢复。可在作品记录中恢复之前的图纸与进度。" : `${label}已应用，可撤销`);
           }}
         />
       )}

@@ -1,0 +1,8 @@
+.bead-module { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; }
+.bead-module-nav { display: flex; flex-shrink: 0; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.bead-module-nav button { border: 0; border-radius: 7px; padding: 9px 14px; background: transparent; color: var(--muted); font-size: 13px; }
+.bead-module-nav button:hover { background: #ffffff80; color: var(--ink); }
+.bead-module-nav button[aria-current=page] { background: #ffffffd9; color: var(--sea); font-weight: 600; }
+.bead-module > .bead-workbench { flex: 1; height: auto; min-height: 0; }
+.workspace:has(.bead-module) { display: flex; flex-direction: column; }
+.bead-module > .works-home, .bead-module > .bead-mobile-view { overflow-y: auto; }

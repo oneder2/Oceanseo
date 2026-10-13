@@ -7,10 +7,42 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 pub const LOCAL: &str = "local";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceBinding {
+    pub version: u8,
+    pub environment: String,
+    pub edition: String,
+    pub id: String,
+    pub vault_id: String,
+}
+
+impl WorkspaceBinding {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.version != 1
+            || !matches!(self.environment.as_str(), "preview" | "live")
+            // Historical tags stay readable so the shared registry remains recoverable.
+            || !matches!(self.edition.as_str(), "personal" | "commercial-beads")
+            || [self.id.as_str(), self.vault_id.as_str()]
+                .iter()
+                .any(|value| {
+                    uuid::Uuid::parse_str(value)
+                        .map(|id| id.to_string())
+                        .ok()
+                        .as_deref()
+                        != Some(*value)
+                })
+        {
+            return Err("工作空间来源或标识无效，原资料已保留".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -23,6 +55,8 @@ pub struct AccountProfile {
     pub expires_at: i64,
     pub device_name: String,
     pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceBinding>,
 }
 
 #[derive(Clone, Serialize)]
@@ -35,6 +69,7 @@ pub struct ProfileSummary {
     pub expires_at: Option<i64>,
     pub signed_in: bool,
     pub active: bool,
+    pub workspace: Option<WorkspaceBinding>,
 }
 
 #[derive(Serialize)]
@@ -52,13 +87,15 @@ struct Selection {
     key: String,
 }
 
+#[derive(Clone)]
 pub struct ProfileRuntime {
     root: PathBuf,
     pub current_key: String,
     pub data_dir: PathBuf,
     pub cipher: CredentialCipher,
-    pub gate: tokio::sync::Mutex<()>,
-    selection_gate: Mutex<()>,
+    pub gate: Arc<tokio::sync::Mutex<()>>,
+    selection_gate: Arc<Mutex<()>>,
+    current_session: Arc<Mutex<Option<AccountProfile>>>,
 }
 
 pub fn profile_key(endpoint: &str, user_id: &str) -> Result<String, String> {
@@ -125,10 +162,29 @@ pub fn write_private(path: &Path, raw: &[u8]) -> Result<(), String> {
 
 impl AccountProfile {
     pub fn key(&self) -> Result<String, String> {
-        profile_key(&self.endpoint, &self.user_id)
+        let legacy = profile_key(&self.endpoint, &self.user_id)?;
+        if let Some(space) = &self.workspace {
+            space.validate()?;
+            Ok(format!(
+                "{:x}",
+                Sha256::digest(format!(
+                    "oceanseo-workspace-v1\n{legacy}\n{}\n{}\n{}",
+                    space.environment, space.edition, space.id
+                ))
+            ))
+        } else {
+            // Never recalculate existing account directories during upgrade.
+            Ok(legacy)
+        }
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(workspace) = &self.workspace {
+            workspace.validate()?;
+            if workspace.vault_id == self.vault_id {
+                return Err("工作空间不能使用原账号资料库标识".into());
+            }
+        }
         if crate::sync::normalize_endpoint(&self.endpoint)? != self.endpoint
             || uuid::Uuid::parse_str(&self.user_id)
                 .map(|id| id.to_string())
@@ -169,11 +225,22 @@ impl AccountProfile {
             expires_at: Some(self.expires_at),
             signed_in: !self.token.is_empty() && self.expires_at > chrono::Utc::now().timestamp(),
             active,
+            workspace: self.workspace.clone(),
         })
     }
 }
 
 impl ProfileRuntime {
+    /// Private, install-local handoffs; never an inactive profile database.
+    pub(crate) fn bead_handoff_path(&self, target: &str) -> Result<PathBuf, String> {
+        if !valid_key(target) {
+            return Err("目标资料库标识无效".into());
+        }
+        let directory = self.root.join("bead-handoffs");
+        private_dir(&directory)?;
+        Ok(directory.join(format!("{target}.json")))
+    }
+
     pub fn open(root: &Path, cipher: CredentialCipher) -> Result<Self, String> {
         fs::create_dir_all(root).map_err(|_| "应用资料目录不可用")?;
         let current_key = Self::selected_at(root)?;
@@ -182,12 +249,17 @@ impl ProfileRuntime {
             current_key,
             data_dir: root.to_path_buf(),
             cipher,
-            gate: tokio::sync::Mutex::new(()),
-            selection_gate: Mutex::new(()),
+            gate: Arc::new(tokio::sync::Mutex::new(())),
+            selection_gate: Arc::new(Mutex::new(())),
+            current_session: Arc::new(Mutex::new(None)),
         };
         if runtime.current_key != LOCAL {
             // Missing/corrupt credentials must not silently open another profile.
-            runtime.read_account(&runtime.current_key)?;
+            *runtime
+                .current_session
+                .lock()
+                .map_err(|_| "账号会话状态不可用")? =
+                Some(runtime.read_account(&runtime.current_key)?);
             runtime.data_dir = runtime.directory(&runtime.current_key)?;
         }
         Ok(runtime)
@@ -221,6 +293,10 @@ impl ProfileRuntime {
     }
 
     pub fn read_account(&self, key: &str) -> Result<AccountProfile, String> {
+        self.decode_account(key, &self.read_account_bytes(key)?)
+    }
+
+    fn read_account_bytes(&self, key: &str) -> Result<String, String> {
         if !valid_key(key) || key == LOCAL {
             return Err("当前为本机离线资料库".into());
         }
@@ -239,9 +315,12 @@ impl ProfileRuntime {
         if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
             return Err("会话配置不能是符号链接".into());
         }
-        let raw = fs::read_to_string(path).map_err(|_| "账号会话无法读取，原资料仍保留")?;
+        fs::read_to_string(path).map_err(|_| "账号会话无法读取，原资料仍保留".into())
+    }
+
+    fn decode_account(&self, key: &str, raw: &str) -> Result<AccountProfile, String> {
         let account: AccountProfile =
-            serde_json::from_str(&self.cipher.decode(&raw)?).map_err(|_| "账号会话格式无效")?;
+            serde_json::from_str(&self.cipher.decode(raw)?).map_err(|_| "账号会话格式无效")?;
         account.validate()?;
         if account.key()? != key {
             return Err("账号与本机资料库不匹配，已停止操作".into());
@@ -253,44 +332,98 @@ impl ProfileRuntime {
         account.validate()?;
         let key = account.key()?;
         let dir = self.directory(&key)?;
-        if dir.join("account-session.json").exists() {
-            let old = self.read_account(&key)?;
-            if old.vault_id != account.vault_id {
+        let previous = if dir.join("account-session.json").exists() {
+            let bytes = self.read_account_bytes(&key)?;
+            let old = self.decode_account(&key, &bytes)?;
+            if old.vault_id != account.vault_id || old.workspace != account.workspace {
                 return Err("账号云端资料库已更换，已停止连接；请联系维护者恢复原资料库".into());
             }
-        }
+            Some(bytes)
+        } else {
+            None
+        };
+        // Android Keystore calls need the main thread. Do not hold the policy or
+        // selection permit while encrypting/decrypting, or another IPC can deadlock it.
         let raw = self
             .cipher
             .encode(&serde_json::to_string(account).map_err(|_| "账号配置无法编码")?)?;
-        write_private(&dir.join("account-session.json"), raw.as_bytes())?;
-        account.summary(self.current_key == key)
-    }
-
-    pub fn select(&self, key: &str) -> Result<ProfileStatus, String> {
         let _guard = self
             .selection_gate
             .lock()
             .map_err(|_| "账号选择状态不可用")?;
+        let latest = if dir.join("account-session.json").exists() {
+            Some(self.read_account_bytes(&key)?)
+        } else {
+            None
+        };
+        if previous != latest {
+            return Err("账号会话已变化，请重新尝试；原会话仍保留".into());
+        }
+        write_private(&dir.join("account-session.json"), raw.as_bytes())?;
+        if self.current_key == key {
+            *self
+                .current_session
+                .lock()
+                .map_err(|_| "账号会话状态不可用")? = Some(account.clone());
+        }
+        account.summary(self.current_key == key)
+    }
+
+    pub fn select(&self, key: &str) -> Result<ProfileStatus, String> {
         if !valid_key(key) {
             return Err("账号标识无效".into());
         }
-        if key != LOCAL {
-            self.read_account(key)?;
-        }
+        let target = if key != LOCAL {
+            let bytes = self.read_account_bytes(key)?;
+            self.decode_account(key, &bytes)?;
+            Some(bytes)
+        } else {
+            None
+        };
         let raw = serde_json::to_vec(&Selection {
             version: 1,
             key: key.into(),
         })
         .map_err(|_| "账号选择无法编码")?;
+        let _guard = self
+            .selection_gate
+            .lock()
+            .map_err(|_| "账号选择状态不可用")?;
+        if let Some(bytes) = target {
+            if self.read_account_bytes(key)? != bytes {
+                return Err("目标会话已变化，请重新选择资料库".into());
+            }
+        }
         write_private(&self.root.join("profile-selection.json"), &raw)?;
         self.status()
+    }
+
+    /// Linearize a short database commit with profile/session selection.
+    /// Never hold this across network calls or while acquiring a database lock.
+    pub fn while_current<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _guard = self
+            .selection_gate
+            .lock()
+            .map_err(|_| "账号选择状态不可用")?;
+        if self.status()?.restart_required {
+            return Err("资料库即将切换，已停止新的业务操作；请重新打开应用".into());
+        }
+        operation()
     }
 
     pub fn current_account(&self) -> Result<Option<AccountProfile>, String> {
         if self.current_key == LOCAL {
             Ok(None)
         } else {
-            self.read_account(&self.current_key).map(Some)
+            self.current_session
+                .lock()
+                .map_err(|_| "账号会话状态不可用".to_string())?
+                .clone()
+                .map(Some)
+                .ok_or_else(|| "当前账号会话状态缺失，原资料仍保留".into())
         }
     }
 
@@ -307,6 +440,7 @@ impl ProfileRuntime {
                 expires_at: None,
                 signed_in: false,
                 active: true,
+                workspace: None,
             }
         };
         Ok(ProfileStatus {
@@ -325,6 +459,7 @@ impl ProfileRuntime {
             expires_at: None,
             signed_in: false,
             active: self.current_key == LOCAL,
+            workspace: None,
         }];
         let directory = self.root.join("profiles");
         if !directory.exists() {
@@ -358,7 +493,11 @@ pub fn get_profile_status(
 pub fn list_local_profiles(
     runtime: tauri::State<'_, ProfileRuntime>,
 ) -> Result<Vec<ProfileSummary>, String> {
-    runtime.list()
+    Ok(runtime
+        .list()?
+        .into_iter()
+        .filter(|p| p.workspace.as_ref().is_none_or(|w| w.edition == "personal"))
+        .collect())
 }
 
 #[cfg(test)]
@@ -376,6 +515,7 @@ mod tests {
             expires_at: 4_000_000_000,
             device_name: "Synthetic device".into(),
             token: "a".repeat(43),
+            workspace: None,
         }
     }
     fn runtime(root: &Path) -> ProfileRuntime {
@@ -393,6 +533,66 @@ mod tests {
                 origin: None,
             })
             .unwrap();
+    }
+
+    #[test]
+    fn workspaces_preserve_legacy_paths_and_keep_late_writes_in_original_space() {
+        let temp = tempfile::tempdir().unwrap();
+        let local = runtime(temp.path());
+        let base = account("00000000-0000-4000-8000-000000000001");
+        let legacy_key = profile_key(&base.endpoint, &base.user_id).unwrap();
+        let legacy = local.save_account(&base).unwrap();
+        assert_eq!(legacy.key, legacy_key);
+        assert!(!serde_json::to_value(&base)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("workspace"));
+        let bind = |environment: &str, edition: &str, id: &str| {
+            let mut result = base.clone();
+            result.workspace = Some(WorkspaceBinding {
+                version: 1,
+                environment: environment.into(),
+                edition: edition.into(),
+                id: id.into(),
+                vault_id: "00000000-0000-4000-8000-000000000010".into(),
+            });
+            result
+        };
+        let personal = bind(
+            "preview",
+            "personal",
+            "00000000-0000-4000-8000-000000000007",
+        );
+        let commercial = bind(
+            "preview",
+            "commercial-beads",
+            "00000000-0000-4000-8000-000000000008",
+        );
+        let live = bind("live", "personal", "00000000-0000-4000-8000-000000000007");
+        let p = local.save_account(&personal).unwrap();
+        let c = local.save_account(&commercial).unwrap();
+        let l = local.save_account(&live).unwrap();
+        let keys = std::collections::HashSet::from([&legacy.key, &p.key, &c.key, &l.key]);
+        assert_eq!(keys.len(), 4);
+        local.select(&p.key).unwrap();
+        let first = runtime(temp.path());
+        let old_store = TaskStore::open(&first.data_dir.join("oceanseo-tasks.sqlite3")).unwrap();
+        create(&old_store, "personal only");
+        first.select(&c.key).unwrap();
+        create(&old_store, "late personal write");
+        let second = runtime(temp.path());
+        let new_store = TaskStore::open(&second.data_dir.join("oceanseo-tasks.sqlite3")).unwrap();
+        assert!(new_store.list().unwrap().is_empty());
+        assert_eq!(old_store.list().unwrap().len(), 2);
+        assert_eq!(first.current_key, p.key);
+        let mut changed = personal.clone();
+        changed.workspace.as_mut().unwrap().vault_id =
+            "00000000-0000-4000-8000-000000000011".into();
+        assert!(first.save_account(&changed).is_err());
+        changed.workspace.as_mut().unwrap().version = 99;
+        assert!(changed.validate().is_err());
+        assert_eq!(first.read_account(&legacy_key).unwrap().workspace, None);
     }
 
     #[test]
@@ -500,5 +700,34 @@ mod tests {
         assert_eq!(reopened.current_key, summary.key);
         assert!(!reopened.status().unwrap().current.signed_in);
         assert_ne!(reopened.data_dir, tmp.path());
+    }
+    #[test]
+    fn current_session_snapshot_tracks_logout_and_relogin_across_clones() {
+        let temp = tempfile::tempdir().unwrap();
+        let local = runtime(temp.path());
+        let mut identity = account("00000000-0000-4000-8000-000000000001");
+        let saved = local.save_account(&identity).unwrap();
+        local.select(&saved.key).unwrap();
+        let current = runtime(temp.path());
+        let cloned = current.clone();
+        assert!(current.status().unwrap().current.signed_in);
+        identity.token.clear();
+        current.save_account(&identity).unwrap();
+        assert!(!cloned.status().unwrap().current.signed_in);
+        identity.token = "z".repeat(43);
+        cloned.save_account(&identity).unwrap();
+        assert!(current.status().unwrap().current.signed_in);
+        assert_eq!(
+            current.current_account().unwrap().unwrap().token,
+            "z".repeat(43)
+        );
+        assert_eq!(
+            runtime(temp.path())
+                .current_account()
+                .unwrap()
+                .unwrap()
+                .token,
+            "z".repeat(43)
+        );
     }
 }

@@ -1,3 +1,5 @@
+import WorkspaceControls from "./personal/WorkspaceControls";
+import { personalEnabled } from "./personal/runtime";
 import { useState } from "react";
 import {
   Archive,
@@ -19,7 +21,19 @@ import {
   X,
 } from "lucide-react";
 import type { View } from "./types";
-import { viewAvailable } from "./platform";
+import { platform, viewAvailable } from "./platform";
+import { registeredNavigation } from "./modules/catalog";
+import { useCapabilities } from "./modules/useCapabilities";
+
+const icons: Record<View, typeof Gauge> = {
+  overview: Gauge, goals: Compass, calendar: CalendarRange, countdowns: Hourglass,
+  people: Users, today: Sparkles, all: LayoutList, completed: Archive,
+  infrastructure: Server, "work-monitor": Radar, "bead-studio": Grid2X2,
+  "meal-planner": ChefHat, "shopping-list": ShoppingBasket, fitness: Dumbbell, travel: MapPin,
+};
+const groups = registeredNavigation().map(group => ({
+  ...group, items: group.items.map(item => ({ ...item, icon: icons[item.view] })),
+}));
 
 export default function WorkspaceNav({
   view,
@@ -29,47 +43,10 @@ export default function WorkspaceNav({
   onNavigate: (view: View) => void;
 }) {
   const [query, setQuery] = useState("");
-  const groups: {
-    name: string;
-    items: { view: View; label: string; icon: typeof Gauge }[];
-  }[] = [
-    {
-      name: "全局导航",
-      items: [
-        { view: "overview", label: "总览", icon: Gauge },
-        { view: "goals", label: "想法与目标", icon: Compass },
-        { view: "calendar", label: "计划日历", icon: CalendarRange },
-        { view: "countdowns", label: "关键日期", icon: Hourglass },
-        { view: "people", label: "人物档案", icon: Users },
-      ],
-    },
-    {
-      name: "任务管理",
-      items: [
-        { view: "today", label: "今天", icon: Sparkles },
-        { view: "all", label: "所有计划", icon: LayoutList },
-        { view: "completed", label: "完成记录", icon: Archive },
-      ],
-    },
-    {
-      name: "个人项目",
-      items: [
-        { view: "infrastructure", label: "主机与服务", icon: Server },
-        { view: "work-monitor", label: "工作观察", icon: Radar },
-        { view: "bead-studio", label: "拼豆图纸", icon: Grid2X2 },
-      ],
-    },
-    {
-      name: "生活与出行",
-      items: [
-        { view: "meal-planner", label: "AI 食谱", icon: ChefHat },
-        { view: "shopping-list", label: "采购清单", icon: ShoppingBasket },
-        { view: "fitness", label: "训练计划", icon: Dumbbell },
-        { view: "travel", label: "旅行规划", icon: MapPin },
-      ],
-    },
-  ];
-  const filtered = groups.map(group => ({ ...group, items: group.items.filter(item =>
+  const capabilities = useCapabilities();
+  if (personalEnabled()) return <nav className="main-nav workspace-nav" aria-label="工作区导航"><WorkspaceControls view={view} onNavigate={onNavigate}/></nav>;
+  const navigation = groups;
+  const filtered = navigation.map(group => ({ ...group, items: group.items.filter(item =>
     viewAvailable(item.view) && `${group.name} ${item.label}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
   ) })).filter(group => group.items.length);
   return (

@@ -12,7 +12,8 @@ const aab = path.resolve(aabArg);
 const metadata = path.resolve(metadataArg);
 const sdk = process.env.ANDROID_HOME ?? "/home/gellar/Android/Sdk";
 const buildTools = path.join(sdk, "build-tools/36.1.0");
-const expectedVersion = JSON.parse(await readFile("package.json", "utf8")).version;
+// Android has an independent release version; a Linux release must not relabel it.
+const expectedVersion = JSON.parse(await readFile("src-tauri/tauri.android.conf.json", "utf8")).version;
 
 function run(command, args) {
   const result = spawnSync(command, args, { encoding: "utf8" });
@@ -25,7 +26,7 @@ await stat(aab);
 const badging = run(path.join(buildTools, "aapt"), ["dump", "badging", apk]);
 const packageLine = badging.match(/^package: name='([^']+)' versionCode='(\d+)' versionName='([^']+)'/m);
 assert.ok(packageLine, "APK manifest is missing package metadata");
-assert.equal(packageLine[1], "com.tideplan.mobile", "Unexpected release applicationId");
+assert.equal(packageLine[1], process.env.OCEANSEO_EXPECTED_APPLICATION_ID ?? "com.tideplan.mobile", "Unexpected release applicationId");
 assert.equal(packageLine[3], expectedVersion, "APK version does not match package.json");
 
 run(path.join(buildTools, "apksigner"), ["verify", "--verbose", apk]);

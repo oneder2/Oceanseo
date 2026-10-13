@@ -15,6 +15,7 @@ mod ai_settings;
 mod assistant;
 mod backup_validation;
 mod bead_ai;
+mod capabilities;
 mod credentials;
 mod deep_links;
 #[cfg(target_os = "linux")]
@@ -24,7 +25,9 @@ mod infrastructure;
 mod maps;
 #[cfg(target_os = "android")]
 mod mobile;
+mod personal_workspaces;
 mod planning;
+mod product;
 mod profiles;
 mod sync;
 mod tasks;
@@ -165,8 +168,10 @@ fn extract_output_text(response: &Value) -> Option<&str> {
 
 #[tauri::command]
 async fn generate_meal_plan(
-    preferences: MealPreferences,
+    mut preferences: MealPreferences,
     ai_settings: tauri::State<'_, ai_settings::AiSettingsStore>,
+    policy: tauri::State<'_, capabilities::CapabilityRuntime>,
+    profile: tauri::State<'_, profiles::ProfileRuntime>,
 ) -> Result<MealPlan, String> {
     let ai = ai_settings.resolve()?;
     if !(1..=12).contains(&preferences.people) {
@@ -176,6 +181,9 @@ async fn generate_meal_plan(
         return Err("每周预算需要在 1 到 1000000 元之间。".into());
     }
 
+    if !capabilities::all_readable(&policy.status(&profile)?) {
+        preferences.planning_context.clear();
+    }
     let planning_context = if preferences.planning_context.trim().is_empty() {
         "未来一周没有额外日程约束。".to_string()
     } else {
@@ -217,44 +225,48 @@ async fn generate_meal_plan(
         }
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|_| "无法初始化网络请求，请重启应用后重试。".to_string())?;
-    let response = client
-        .post(ai.responses_url)
-        .bearer_auth(&ai.api_key)
-        .json(&request_body)
-        .send()
+    policy
+        .while_authorized(&profile, "meal-planner", "ai", async {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(90))
+                .build()
+                .map_err(|_| "无法初始化网络请求，请重启应用后重试。".to_string())?;
+            let response = client
+                .post(ai.responses_url)
+                .bearer_auth(&ai.api_key)
+                .json(&request_body)
+                .send()
+                .await
+                .map_err(|_| "无法连接 AI 服务，请检查网络和 BASE_URL 后重试。".to_string())?;
+
+            let status = response.status();
+            let response_json: Value = response
+                .json()
+                .await
+                .map_err(|_| "AI 服务返回了无法读取的响应，请稍后重试。".to_string())?;
+
+            if !status.is_success() {
+                let message = match status.as_u16() {
+                    401 => "API 密钥无效或已失效。",
+                    429 => "请求过于频繁或账户额度不足，请稍后重试。",
+                    400..=499 => "请求未被 AI 服务接受，请检查账户和模型权限。",
+                    _ => "AI 服务暂时不可用，请稍后重试。",
+                };
+                return Err(message.into());
+            }
+
+            let output_text = extract_output_text(&response_json)
+                .ok_or_else(|| "本次没有生成可用食谱，请重新生成。".to_string())?;
+            let plan: MealPlan = serde_json::from_str(output_text)
+                .map_err(|_| "生成的食谱格式不完整，请重新生成。".to_string())?;
+
+            if plan.days.len() != 7 {
+                return Err("生成结果未覆盖完整七天，请重新生成。".into());
+            }
+
+            Ok(plan)
+        })
         .await
-        .map_err(|_| "无法连接 AI 服务，请检查网络和 BASE_URL 后重试。".to_string())?;
-
-    let status = response.status();
-    let response_json: Value = response
-        .json()
-        .await
-        .map_err(|_| "AI 服务返回了无法读取的响应，请稍后重试。".to_string())?;
-
-    if !status.is_success() {
-        let message = match status.as_u16() {
-            401 => "API 密钥无效或已失效。",
-            429 => "请求过于频繁或账户额度不足，请稍后重试。",
-            400..=499 => "请求未被 AI 服务接受，请检查账户和模型权限。",
-            _ => "AI 服务暂时不可用，请稍后重试。",
-        };
-        return Err(message.into());
-    }
-
-    let output_text = extract_output_text(&response_json)
-        .ok_or_else(|| "本次没有生成可用食谱，请重新生成。".to_string())?;
-    let plan: MealPlan = serde_json::from_str(output_text)
-        .map_err(|_| "生成的食谱格式不完整，请重新生成。".to_string())?;
-
-    if plan.days.len() != 7 {
-        return Err("生成结果未覆盖完整七天，请重新生成。".into());
-    }
-
-    Ok(plan)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -281,14 +293,30 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(capabilities::guarded_handler(tauri::generate_handler![
             get_runtime_platform,
+            product::get_runtime_edition,
+            product::get_runtime_release_channel,
+            capabilities::get_module_capabilities,
+            capabilities::refresh_module_capabilities,
+            capabilities::open_control_center,
             profiles::get_profile_status,
             profiles::list_local_profiles,
+            tasks::bead_transfer::export_bead_transfer,
+            tasks::bead_transfer::preview_bead_transfer,
+            tasks::bead_transfer::commit_bead_transfer,
+            tasks::bead_transfer::handoff::stage_bead_handoff,
+            tasks::bead_transfer::handoff::pending_bead_handoff,
+            tasks::bead_transfer::handoff::cancel_bead_handoff,
+            tasks::bead_transfer::handoff::commit_bead_handoff,
+            tasks::bead_transfer::lifecycle::preview_bead_lifecycle,
+            tasks::bead_transfer::lifecycle::commit_bead_lifecycle,
             accounts::sign_in_account,
             accounts::select_local_profile,
             accounts::restart_selected_profile,
             accounts::check_account_session,
+            accounts::list_account_workspaces,
+            accounts::select_account_workspace,
             accounts::list_account_sessions,
             accounts::revoke_account_session,
             accounts::logout_account,
@@ -332,6 +360,10 @@ pub fn run() {
             ai_settings::get_ai_settings,
             ai_settings::save_ai_settings,
             ai_settings::test_ai_connection,
+            personal_workspaces::personal_workspaces,
+            personal_workspaces::save_personal_workspaces,
+            personal_workspaces::export_personal_backup,
+            personal_workspaces::restore_personal_backup,
             tasks::list_tasks,
             tasks::get_task,
             tasks::create_task,
@@ -346,6 +378,8 @@ pub fn run() {
             deep_links::take_pending_deep_links,
             #[cfg(desktop)]
             work_monitor::get_work_dashboard,
+            #[cfg(desktop)]
+            work_monitor::export_work_archive,
             #[cfg(desktop)]
             work_monitor::save_work_monitor_config,
             #[cfg(desktop)]
@@ -362,7 +396,7 @@ pub fn run() {
             work_monitor::reject_work_draft,
             #[cfg(desktop)]
             work_monitor::sync_work_draft,
-        ])
+        ]))
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let credential_cipher = credentials::CredentialCipher::new(app.handle());
@@ -371,6 +405,9 @@ pub fn run() {
             let profile_data_dir = profile.data_dir.clone();
             let account_key =
                 (profile.current_key != profiles::LOCAL).then(|| profile.current_key.clone());
+            app.manage(
+                capabilities::CapabilityRuntime::open(&profile).map_err(std::io::Error::other)?,
+            );
             app.manage(profile);
             app.manage(infrastructure::HostRuntime {
                 path: profile_data_dir.join("host-credentials.json"),
@@ -406,7 +443,26 @@ pub fn run() {
             let task_store =
                 tasks::TaskStore::open(&profile_data_dir.join("oceanseo-tasks.sqlite3"))
                     .map_err(std::io::Error::other)?;
+            task_store
+                .bind_authorization(
+                    app.state::<capabilities::CapabilityRuntime>()
+                        .inner()
+                        .clone(),
+                    app.state::<profiles::ProfileRuntime>().inner().clone(),
+                )
+                .map_err(std::io::Error::other)?;
             app.manage(task_store);
+            if std::env::consts::OS == "linux" {
+                let personal = personal_workspaces::PersonalRuntime::open(profile_data_dir.clone())
+                    .map_err(std::io::Error::other)?;
+                personal
+                    .recover_restore(&app.state::<tasks::TaskStore>())
+                    .map_err(std::io::Error::other)?;
+                personal
+                    .recover_assignments(&app.state::<tasks::TaskStore>())
+                    .map_err(std::io::Error::other)?;
+                app.manage(personal);
+            }
             #[cfg(desktop)]
             {
                 let work_monitor_store = work_monitor::WorkMonitorStore::open(
@@ -414,6 +470,14 @@ pub fn run() {
                     profile_data_dir.join("work-monitor-exports"),
                 )
                 .map_err(std::io::Error::other)?;
+                work_monitor_store
+                    .bind_authorization(
+                        app.state::<capabilities::CapabilityRuntime>()
+                            .inner()
+                            .clone(),
+                        app.state::<profiles::ProfileRuntime>().inner().clone(),
+                    )
+                    .map_err(std::io::Error::other)?;
                 app.manage(work_monitor_store);
             }
 

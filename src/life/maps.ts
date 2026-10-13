@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "../personal/invoke";
 import type { Place, RouteLeg } from "./model";
 export interface MapSettings {
   configured: boolean;

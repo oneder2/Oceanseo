@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { ImagePlus, Sparkles, X, Download } from "lucide-react";
 import type { useImageImport } from "./useImageImport";
 import { exportSourceImage } from "./export";
+import { isTauri } from "@tauri-apps/api/core";
 
 export default function AiImagePanel({
   importer,
@@ -27,8 +28,7 @@ export default function AiImagePanel({
         </div>
       </header>
       <p className="bead-help">
-        点击识别或生成时，仅将这张图片和下方说明发送到共用 AI
-        服务，可能产生费用。上传前会缩至最长 1024 px 并移除原文件元数据。
+        点击识别或生成时，仅将这张图片和下方说明发送到你配置的 AI 服务，可能产生费用。上传前会缩至最长 1024 px 并移除原文件元数据。
       </p>
       <fieldset disabled={locked}>
         <button
@@ -96,8 +96,7 @@ export default function AiImagePanel({
             />
           </label>
           <p className="bead-help">
-            共用现有 API_KEY、BASE_URL 和对话模型；服务需额外支持 Responses
-            图片生成工具。图片模型可填写服务商提供的兼容名称。
+            {isTauri() ? "共用现有 API_KEY、BASE_URL 和对话模型；服务需额外支持 Responses 图片生成工具。图片模型可填写服务商提供的兼容名称。" : "请在桌面应用中配置并使用 AI 服务。"}
           </p>
           <button className="secondary-button" onClick={onSettings}>
             打开共用 AI 设置

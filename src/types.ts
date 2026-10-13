@@ -24,6 +24,7 @@ export interface Task {
 }
 
 export interface TaskDraft {
+  workspaceOwner?: string;
   title: string;
   notes: string;
   horizon: Horizon;

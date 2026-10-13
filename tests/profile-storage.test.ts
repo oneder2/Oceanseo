@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ProfileStorage, initializeProfileStorage } from "../src/profileStorage";
+import { ProfileStorage, initializeProfileStorage, initializePersonalStorage } from "../src/profileStorage";
 import { ReliableState, OUTBOX_PREFIX } from "../src/reliableState";
 
 class MemoryStorage implements Storage {
@@ -81,4 +81,59 @@ test("profile binding rejects traversal and hot switching instead of retargeting
   initializeProfileStorage("local");
   initializeProfileStorage("local");
   assert.throws(() => initializeProfileStorage(aliceKey), /profile_restart_required/);
+});
+
+test("workspace restore archives every scene's pending edits without touching another profile", async () => {
+  const { raw, alice, bob } = setup();
+  const scene = "11111111-1111-4111-8111-111111111111";
+  const outbox = `oceanseo.scene.v1:${scene}:${OUTBOX_PREFIX}tideplan.purchase-list.v1`;
+  const goalPending = "oceanseo.scene.v1:main:tideplan.goals.pending.v1";
+  const draft = "tideplan.draft.task:new";
+  const pending = JSON.stringify({ revision: "1", value: ["newer old data"] });
+  for (const store of [alice, bob]) {
+    store.setItem(outbox,pending);store.setItem(goalPending,"queued proposal");store.setItem(draft,"draft");
+    store.setItem("tideplan.tasks.v1","shared tasks");
+  }
+  const clear = alice.preparePersonalRestore();
+  // Until native restore succeeds, failed restore must leave edits replayable.
+  assert.equal(alice.getItem(outbox),pending);
+  clear();
+  assert.equal(alice.getItem(outbox),null);assert.equal(alice.getItem(goalPending),null);assert.equal(alice.getItem(draft),null);
+  assert.equal(bob.getItem(outbox),pending);assert.equal(bob.getItem(goalPending),"queued proposal");assert.equal(bob.getItem(draft),"draft");
+  assert.equal(alice.getItem("tideplan.tasks.v1"),"shared tasks");
+  const archiveKey=Array.from({length:alice.length},(_,i)=>alice.key(i)).find(k=>k?.startsWith("oceanseo.personal.recovery.before-restore:"))!;
+  const archive=JSON.parse(alice.getItem(archiveKey)!);
+  assert.equal(Object.keys(archive).length,3);assert.ok(Object.values(archive).includes(pending));
+  assert.equal(raw.length,6);
+});
+
+test("sharing migration preserves both scenes and merges pending edits with native committed data", async () => {
+  const { raw, alice, bob } = setup();
+  const scene = "11111111-1111-4111-8111-111111111111", key = "tideplan.purchase-list.v1";
+  const main = `oceanseo.scene.v1:main:${key}`, other = `oceanseo.scene.v1:${scene}:${key}`;
+  alice.setItem(main, JSON.stringify([{id:"a",name:"main"}]));
+  alice.setItem(other, JSON.stringify([{id:"b",name:"CEO"}]));
+  alice.setItem(`oceanseo.scene.v1:${scene}:${OUTBOX_PREFIX}${key}`, JSON.stringify({revision:"1",value:[{id:"b",name:"edited"}]}));
+  bob.setItem(other, "other account");
+  alice.migrateSharedTools(["main",scene],true);
+  const writes: unknown[] = [];
+  const canonical = new ProfileStorage(() => raw, () => aliceKey);
+  // Use raw canonical keys before enabling the shared scene namespace globally.
+  const recovery = new ReliableState({getItem:k=>canonical.getItem(`oceanseo.scene.v1:main:${k}`),setItem:(k,v)=>canonical.setItem(`oceanseo.scene.v1:main:${k}`,v),removeItem:k=>canonical.removeItem(`oceanseo.scene.v1:main:${k}`)},[key],async(_key,value)=>{writes.push(value);});
+  await recovery.recover({[key]:[{id:"a",name:"native"},{id:"b",name:"old"},{id:"c",name:"database only"}]});
+  assert.deepEqual(writes,[[{id:"a",name:"native"},{id:"b",name:"edited"},{id:"c",name:"database only"}]]);
+  assert.equal(bob.getItem(other),"other account");
+  assert.equal(alice.getItem(other),JSON.stringify([{id:"b",name:"CEO"}]));
+  assert.ok(alice.getItem("oceanseo.personal.recovery.before-sharing.v1"));
+  alice.migrateSharedTools(["main",scene],true);
+  assert.equal(alice.getItem(`oceanseo.scene.v1:main:${OUTBOX_PREFIX}${key}`),null);
+});
+
+test("tool storage remains shared when workspace changes while profiles remain isolated", () => {
+  const {alice,bob}=setup();
+  initializePersonalStorage("main");
+  alice.setItem("tideplan.life.v1","same data");
+  initializePersonalStorage("11111111-1111-4111-8111-111111111111");
+  assert.equal(alice.getItem("tideplan.life.v1"),"same data");
+  assert.equal(bob.getItem("tideplan.life.v1"),null);
 });

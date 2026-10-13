@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Oceanseo Module QA",
+  "mainBinaryName": "oceanseo-moduleqa",
+  "identifier": "com.oceanseo.moduleqa",
+  "app": {
+    "windows": [{ "label": "main", "title": "Oceanseo · 模块隔离验收" }]
+  },
+  "plugins": {
+    "deep-link": { "desktop": { "schemes": ["oceanseo-moduleqa"] } }
+  },
+  "bundle": {
+    "shortDescription": "Oceanseo P1 模块与资料库隔离验收",
+    "longDescription": "独立测试安装，使用独立程序名、资料目录和链接协议。不是正式商业发行。"
+  }
+}

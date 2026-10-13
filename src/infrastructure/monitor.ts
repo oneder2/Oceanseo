@@ -1,5 +1,6 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "../personal/invoke";
 import { useEffect, useRef, useState } from "react";
+import { requireModule } from "../modules/capabilities";
 import type { Host, Infrastructure, Metrics, Sample } from "./model";
 import { latestSample, validMetrics } from "./model";
 
@@ -17,6 +18,7 @@ export function useHostMonitor(
   current.current = data;
   save.current = update;
   async function check(host: Host) {
+    requireModule("infrastructure");
     if (active.current.has(host.id)) return;
     if (!isTauri()) throw Error("请在安装版检查服务；浏览器预览不发起探测");
     active.current.add(host.id);

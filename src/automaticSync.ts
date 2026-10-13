@@ -45,9 +45,15 @@ export interface AutomaticSyncStatus {
   retryAt: number | null;
 }
 export function syncFailure(error: unknown): { kind: string; message: string } {
+  const message = error instanceof Error ? error.message
+    : error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
+  // A module policy can change without invalidating the account session.
+  // Wait for permissions to return instead of requiring a redundant login.
+  if (message.startsWith("module_permission_denied:") || message.startsWith("资料库即将切换"))
+    return { kind: "stale", message };
   if (error && typeof error === "object" && "kind" in error && "message" in error)
     return { kind: String(error.kind), message: String(error.message) };
-  return { kind: "integrity", message: error instanceof Error ? error.message : String(error) };
+  return { kind: "integrity", message };
 }
 
 interface Dependencies {

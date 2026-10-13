@@ -164,7 +164,16 @@ fn failure(
     })
 }
 
+#[cfg(test)]
 async fn check(runtime: &SyncRuntime, store: &TaskStore) -> Result<Check, SyncFailure> {
+    check_authorized(runtime, store, None).await
+}
+
+async fn check_authorized(
+    runtime: &SyncRuntime,
+    store: &TaskStore,
+    authorization: Option<&SyncAuthorization<'_>>,
+) -> Result<Check, SyncFailure> {
     let settings = read(runtime)?;
     if !settings.enabled {
         return Ok(Check {
@@ -196,7 +205,14 @@ async fn check(runtime: &SyncRuntime, store: &TaskStore) -> Result<Check, SyncFa
         .automatic_preview
         .lock()
         .map_err(|_| "自动同步状态不可用")? = None;
-    let (preview, plan) = match prepare_preview(runtime, store).await {
+    let (local, _) = store.sync_snapshot().map_err(SyncFailure::from)?;
+    if let Some(authorization) = authorization {
+        authorization.check_records(&local)?;
+    }
+    let (preview, plan) = match match authorization {
+        Some(authorization) => prepare_preview_checked(runtime, store, authorization).await,
+        None => prepare_preview(runtime, store).await,
+    } {
         Ok(value) => value,
         Err(error) => return failure(runtime, settings, error),
     };
@@ -237,11 +253,22 @@ async fn check(runtime: &SyncRuntime, store: &TaskStore) -> Result<Check, SyncFa
     })
 }
 
+#[cfg(test)]
 async fn commit(
     runtime: &SyncRuntime,
     store: &TaskStore,
     preview_id: &str,
 ) -> Result<Receipt, SyncFailure> {
+    commit_authorized(runtime, store, preview_id, || Ok(())).await
+}
+
+async fn commit_authorized(
+    runtime: &SyncRuntime,
+    store: &TaskStore,
+    preview_id: &str,
+    authorize: impl Fn() -> Result<(), SyncFailure>,
+) -> Result<Receipt, SyncFailure> {
+    authorize()?;
     let settings = read(runtime)?;
     if !settings.enabled || settings.pause.is_some() {
         return Err(SyncFailure::new(
@@ -273,7 +300,7 @@ async fn commit(
         }
         slot.take().expect("matching preview")
     };
-    match commit_prepared(runtime, store, &preview, &BTreeMap::new()).await {
+    match commit_prepared_authorized(runtime, store, &preview, &BTreeMap::new(), authorize).await {
         Ok(receipt) => Ok(receipt),
         Err(error) => {
             if matches!(error.kind, FailureKind::Auth | FailureKind::Integrity) {
@@ -328,6 +355,7 @@ pub async fn set_automatic_sync_enabled(
     runtime: tauri::State<'_, SyncRuntime>,
     store: tauri::State<'_, TaskStore>,
     profile: tauri::State<'_, ProfileRuntime>,
+    capabilities: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
     profile_key: String,
     enabled: bool,
 ) -> Result<Settings, SyncFailure> {
@@ -335,6 +363,14 @@ pub async fn set_automatic_sync_enabled(
     let _guard = runtime.gate.lock().await;
     if !identity(&runtime, &profile, &profile_key)? {
         return Err("资料库即将切换，自动同步设置未修改".into());
+    }
+    if enabled {
+        let authorization = SyncAuthorization {
+            capabilities: &capabilities,
+            profile: &profile,
+        };
+        let (local, _) = store.sync_snapshot().map_err(SyncFailure::from)?;
+        authorization.check_records(&local)?;
     }
     enabled_settings(&runtime, &store, enabled)
 }
@@ -344,9 +380,9 @@ pub async fn preview_automatic_sync(
     runtime: tauri::State<'_, SyncRuntime>,
     store: tauri::State<'_, TaskStore>,
     profile: tauri::State<'_, ProfileRuntime>,
+    capabilities: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
     profile_key: String,
 ) -> Result<Check, SyncFailure> {
-    let _profile_guard = profile.gate.lock().await;
     let _guard = runtime.gate.lock().await;
     if !identity(&runtime, &profile, &profile_key)? {
         return Ok(Check {
@@ -355,7 +391,17 @@ pub async fn preview_automatic_sync(
             plan: None,
         });
     }
-    check(&runtime, &store).await
+    let authorization = SyncAuthorization {
+        capabilities: &capabilities,
+        profile: &profile,
+    };
+    let (local, _) = store.sync_snapshot().map_err(SyncFailure::from)?;
+    authorization.check_records(&local)?;
+    authorization
+        .during_records(&local, || {
+            check_authorized(&runtime, &store, Some(&authorization))
+        })
+        .await
 }
 
 #[tauri::command]
@@ -363,10 +409,10 @@ pub async fn commit_automatic_sync(
     runtime: tauri::State<'_, SyncRuntime>,
     store: tauri::State<'_, TaskStore>,
     profile: tauri::State<'_, ProfileRuntime>,
+    capabilities: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
     profile_key: String,
     preview_id: String,
 ) -> Result<Receipt, SyncFailure> {
-    let _profile_guard = profile.gate.lock().await;
     let _guard = runtime.gate.lock().await;
     if !identity(&runtime, &profile, &profile_key)? {
         return Err(SyncFailure::new(
@@ -374,7 +420,35 @@ pub async fn commit_automatic_sync(
             "资料库即将切换，自动提交已停止",
         ));
     }
-    commit(&runtime, &store, &preview_id).await
+    let authorization = SyncAuthorization {
+        capabilities: &capabilities,
+        profile: &profile,
+    };
+    let (local, _) = store.sync_snapshot().map_err(SyncFailure::from)?;
+    let mut authorized_records = local;
+    {
+        let slot = runtime
+            .automatic_preview
+            .lock()
+            .map_err(|_| "自动同步状态不可用")?;
+        let preview = slot
+            .as_ref()
+            .filter(|p| p.id == preview_id)
+            .ok_or("自动检查结果已失效，稍后重新检查")?;
+        for (key, value) in &preview.remote.records {
+            authorized_records
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+    }
+    authorization.check_records(&authorized_records)?;
+    authorization
+        .during_records(&authorized_records, || {
+            commit_authorized(&runtime, &store, &preview_id, || {
+                authorization.check_records(&authorized_records)
+            })
+        })
+        .await
 }
 
 #[cfg(test)]

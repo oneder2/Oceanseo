@@ -5,6 +5,7 @@ import type { PurchaseItem, ReminderSettings, Task } from "../types";
 import type { GoalController } from "./store";
 import { localReview } from "./model";
 import { dueGoalReviews } from "./rhythm";
+import { can } from "../modules/capabilities";
 export function useGoalRhythm(
   c: GoalController,
   tasks: Task[],
@@ -20,7 +21,7 @@ export function useGoalRhythm(
     async function tick() {
       setToday(dateKey());
       const { c, tasks, life, reminders, purchases } = latest.current;
-      if (!c.loaded || !c.state.goals.length || running.current) return;
+      if (!can("goals", "write") || !c.loaded || !c.state.goals.length || running.current) return;
       const today = dateKey(),
         kinds = dueGoalReviews(c.state, reminders);
       if (!kinds.length) return;

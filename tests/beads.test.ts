@@ -1,6 +1,7 @@
 import test from "node:test";
 import "./calendar-events.test";
 import "./bead-document.test";
+import "./bead-works.test";
 import "./life.test";
 import "./goals.test";
 import "./goal-handoff.test";
@@ -9,6 +10,8 @@ import "./android-features.test";
 import "./infrastructure.test";
 import "./profile-storage.test";
 import "./automatic-sync.test";
+import "./module-catalog.test";
+import "./module-capabilities.test";
 import assert from "node:assert/strict";
 import { convertImage, type ConvertOptions } from "../src/beads/convert";
 import {
@@ -21,6 +24,18 @@ import {
 } from "../src/beads/model";
 import { fillHoles, floodFill, thickenOutline } from "../src/beads/edit";
 import { dateFromKey, dateKey } from "../src/dateUtils";
+import { pinchCamera } from "../src/beads/camera";
+
+test("two-finger zoom preserves the bead under the moving midpoint and clamps scale", () => {
+  const before = { x: 30, y: 20, cell: 20 };
+  const from = { x: 130, y: 100 }, to = { x: 160, y: 125 };
+  const zoomed = pinchCamera(before, 100, 160, from, to);
+  assert.equal((to.x - zoomed.x) / zoomed.cell, (from.x - before.x) / before.cell);
+  assert.equal((to.y - zoomed.y) / zoomed.cell, (from.y - before.y) / before.cell);
+  assert.equal(pinchCamera(before, 1, 500, from, to).cell, 72);
+  assert.equal(pinchCamera(before, 500, 1, from, to).cell, 1);
+  assert.ok(Number.isFinite(pinchCamera(before, 0, 0, from, to).x));
+});
 
 test("calendar dates preserve leap years and centuries during year jumps", () => {
   for (const key of [

@@ -1,17 +1,6 @@
 name: Android internal build
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'src/**'
-      - 'src-tauri/**'
-      - 'services/sync/**'
-      - 'services/accounts/**'
-      - 'tests/**'
-      - 'scripts/**'
-      - 'vite.config.ts'
-      - 'package*.json'
-      - '.github/workflows/android.yml'
 permissions:
   contents: read
 jobs:

@@ -1,5 +1,6 @@
 import { profileLocalStorage as localStorage } from "../profileStorage";
 import { useEffect, useRef, useState } from "react";
+import { requireModule } from "../modules/capabilities";
 import {
   APP_STATE_KEYS,
   persistAppState,
@@ -45,6 +46,7 @@ export function useAssistantState(ready: boolean) {
   function change(update: (s: AssistantState) => AssistantState) {
     if (!loaded) return;
     const next = update(current.current);
+    try { requireModule("goals"); } catch (error) { setSaveError(String(error)); return; }
     if (!isAssistantState(next)) {
       setSaveError("助手记录未保存：内容超出限制或格式无效");
       return;

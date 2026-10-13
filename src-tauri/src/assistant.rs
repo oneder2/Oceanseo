@@ -9,7 +9,7 @@ use tauri::Emitter;
 use tokio::sync::oneshot;
 
 const SCOPES: [&str; 5] = ["tasks", "calendar", "meals", "work", "infrastructure"];
-const PAGES: [&str; 15] = [
+const PAGES: [&str; 17] = [
     "infrastructure",
     "overview",
     "goals",
@@ -22,6 +22,8 @@ const PAGES: [&str; 15] = [
     "work-monitor",
     "completed",
     "bead-studio",
+    "bead-home",
+    "bead-progress",
     "people",
     "fitness",
     "travel",
@@ -355,11 +357,19 @@ async fn run(
 
 #[tauri::command]
 pub async fn run_assistant(
-    request: AgentRequest,
+    mut request: AgentRequest,
     store: tauri::State<'_, AiSettingsStore>,
     runtime: tauri::State<'_, AssistantRuntime>,
     app: tauri::AppHandle,
 ) -> Result<AgentReply, String> {
+    use tauri::Manager;
+    let permissions = app.state::<crate::capabilities::CapabilityRuntime>();
+    let profile = app.state::<crate::profiles::ProfileRuntime>();
+    let policy = permissions.status(&profile)?;
+    crate::capabilities::filter_context(&mut request.context, &policy);
+    if !crate::capabilities::all_readable(&policy) {
+        request.history.clear();
+    }
     if !valid_request(&request) {
         return Err("助手输入无效或过长".into());
     }
@@ -381,10 +391,12 @@ pub async fn run_assistant(
             json!({"requestId":request_id,"stage":stage}),
         );
     };
-    let result = tokio::select! {
+    let result = permissions.while_authorized(&profile, "goals", "ai", async {
+      tokio::select! {
         _ = rx => Err("本轮对话已停止".into()),
         result = tokio::time::timeout(Duration::from_secs(120), run(ai, request, progress)) => result.unwrap_or_else(|_| Err("助手超过两分钟未完成，请拆分问题后重试".into())),
-    };
+      }
+    }).await;
     if let Ok(mut active) = runtime.0.lock() {
         active.remove(&request_id);
     }

@@ -44,6 +44,7 @@ impl From<&str> for SyncFailure {
 
 pub const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub const GOALS: &str = "goals";
+pub const BEAD_WORKS: &str = "tideplan.bead-works.v1";
 pub type Records = BTreeMap<String, Value>;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -73,6 +74,8 @@ pub struct Config {
     pub token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_vault_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<crate::profiles::WorkspaceBinding>,
 }
 
 pub struct SyncRuntime {
@@ -82,6 +85,95 @@ pub struct SyncRuntime {
     pub gate: tokio::sync::Mutex<()>,
     pub preview: Mutex<Option<Preview>>,
     pub automatic_preview: Mutex<Option<Preview>>,
+}
+
+/// Keep native authorization live while waiting for HTTP, and check again
+/// immediately before local commits for each module represented in the vault.
+struct SyncAuthorization<'a> {
+    capabilities: &'a crate::capabilities::CapabilityRuntime,
+    profile: &'a crate::profiles::ProfileRuntime,
+}
+
+impl SyncAuthorization<'_> {
+    fn check_records(&self, records: &Records) -> Result<(), SyncFailure> {
+        self.profile
+            .while_current(|| Ok(()))
+            .map_err(|message| SyncFailure::new(FailureKind::Stale, message))?;
+        for module in required_modules(records) {
+            self.capabilities
+                .require(self.profile, module, "write")
+                .map_err(|message| SyncFailure::new(FailureKind::Stale, message))?;
+        }
+        Ok(())
+    }
+
+    async fn during_records<T, F, Fut>(
+        &self,
+        records: &Records,
+        operation: F,
+    ) -> Result<T, SyncFailure>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<T, SyncFailure>>,
+    {
+        let modules = required_modules(records);
+        match modules.as_slice() {
+            [] => {
+                self.check_records(records)?;
+                let result = operation().await;
+                self.check_records(records)?;
+                result
+            }
+            [module] => self
+                .capabilities
+                .while_authorized(self.profile, module, "write", async {
+                    Ok(operation().await)
+                })
+                .await
+                .map_err(|message| SyncFailure::new(FailureKind::Stale, message))?,
+            [first, second] => self
+                .capabilities
+                .while_authorized(self.profile, first, "write", async {
+                    self.capabilities
+                        .while_authorized(self.profile, second, "write", async {
+                            Ok(operation().await)
+                        })
+                        .await
+                })
+                .await
+                .map_err(|message| SyncFailure::new(FailureKind::Stale, message))?,
+            [first, second, third] => self
+                .capabilities
+                .while_authorized(self.profile, first, "write", async {
+                    self.capabilities
+                        .while_authorized(self.profile, second, "write", async {
+                            self.capabilities
+                                .while_authorized(self.profile, third, "write", async {
+                                    Ok(operation().await)
+                                })
+                                .await
+                        })
+                        .await
+                })
+                .await
+                .map_err(|message| SyncFailure::new(FailureKind::Stale, message))?,
+            _ => Err("同步内容包含过多模块，已停止操作".into()),
+        }
+    }
+}
+
+fn required_modules(records: &Records) -> Vec<&'static str> {
+    let mut modules = std::collections::BTreeSet::new();
+    for key in records.keys() {
+        if key.starts_with("task:") {
+            modules.insert("tasks");
+        } else if key == GOALS {
+            modules.insert("goals");
+        } else if key == BEAD_WORKS {
+            modules.insert("bead-studio");
+        }
+    }
+    modules.into_iter().collect()
 }
 
 #[derive(Clone)]
@@ -273,6 +365,15 @@ pub fn validate_records(records: &Records) -> Result<(), String> {
             {
                 return Err("同步目标与对话格式无效".into());
             }
+        } else if key == BEAD_WORKS {
+            if !crate::backup_validation::valid(BEAD_WORKS, value)
+                || serde_json::to_vec(value)
+                    .map_err(|_| "同步拼豆作品无法编码")?
+                    .len()
+                    > 2 * 1024 * 1024
+            {
+                return Err("同步拼豆作品格式无效".into());
+            }
         } else {
             return Err("服务端包含当前版本不支持的同步内容，请升级应用。".into());
         }
@@ -307,7 +408,7 @@ pub fn normalize_endpoint(raw: &str) -> Result<String, String> {
 }
 
 impl SyncRuntime {
-    fn config(&self) -> Result<Config, String> {
+    pub(crate) fn config(&self) -> Result<Config, String> {
         if !self.path.exists() {
             if self.account_key.is_some() {
                 return Err("账号会话文件缺失，已停止同步并保留本机数据".into());
@@ -330,7 +431,14 @@ impl SyncRuntime {
                 } else {
                     String::new()
                 },
-                expected_vault_id: Some(profile.vault_id),
+                expected_vault_id: Some(
+                    profile
+                        .workspace
+                        .as_ref()
+                        .map(|space| space.vault_id.clone())
+                        .unwrap_or(profile.vault_id),
+                ),
+                workspace: profile.workspace,
             });
         }
         serde_json::from_str(&self.cipher.decode(&raw)?)
@@ -360,7 +468,7 @@ impl SyncRuntime {
 }
 
 #[cfg(test)]
-async fn request(config: &Config, body: Option<Value>) -> Result<Vault, String> {
+pub(crate) async fn request(config: &Config, body: Option<Value>) -> Result<Vault, String> {
     request_checked(config, body)
         .await
         .map_err(|error| error.message)
@@ -375,14 +483,21 @@ async fn request_checked(config: &Config, body: Option<Value>) -> Result<Vault, 
     }
     let endpoint = normalize_endpoint(&config.endpoint)?;
     let client = reqwest::Client::builder()
+        .user_agent(concat!("Oceanseo/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "无法初始化同步连接")?;
-    let route = if config.expected_vault_id.is_some() {
-        "/v2/vault"
+    let route = if let Some(space) = &config.workspace {
+        space.validate()?;
+        if config.expected_vault_id.as_ref() != Some(&space.vault_id) {
+            return Err("同步空间与资料库标识不匹配".into());
+        }
+        format!("/v2/workspaces/{}/vault", space.id)
+    } else if config.expected_vault_id.is_some() {
+        "/v2/vault".into()
     } else {
-        "/v1/vault"
+        "/v1/vault".into()
     };
     let url = format!("{endpoint}{route}");
     let req = if let Some(body) = body {
@@ -470,6 +585,7 @@ pub async fn get_sync_status(
 #[tauri::command]
 pub async fn save_sync_config(
     runtime: tauri::State<'_, SyncRuntime>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
     endpoint: String,
     token: Option<String>,
 ) -> Result<(), String> {
@@ -488,10 +604,13 @@ pub async fn save_sync_config(
     {
         return Err("访问令牌需为 32–512 位字母、数字、下划线或短横线。".into());
     }
-    runtime.write_config(&Config {
-        endpoint,
-        token,
-        expected_vault_id: None,
+    profile.while_current(|| {
+        runtime.write_config(&Config {
+            endpoint,
+            token,
+            expected_vault_id: None,
+            workspace: None,
+        })
     })?;
     *runtime.preview.lock().map_err(|_| "同步状态不可用")? = None;
     Ok(())
@@ -501,10 +620,23 @@ pub async fn save_sync_config(
 pub async fn preview_sync(
     runtime: tauri::State<'_, SyncRuntime>,
     store: tauri::State<'_, TaskStore>,
+    capabilities: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
 ) -> Result<Plan, String> {
     let _guard = runtime.gate.lock().await;
+    let authorization = SyncAuthorization {
+        capabilities: &capabilities,
+        profile: &profile,
+    };
+    let (local, _) = store.sync_snapshot()?;
+    authorization
+        .check_records(&local)
+        .map_err(|error| error.message)?;
     *runtime.preview.lock().map_err(|_| "同步状态不可用")? = None;
-    let (preview, plan) = prepare_preview(&runtime, &store)
+    let (preview, plan) = authorization
+        .during_records(&local, || {
+            prepare_preview_checked(&runtime, &store, &authorization)
+        })
         .await
         .map_err(|error| error.message)?;
     *runtime.preview.lock().map_err(|_| "同步状态不可用")? = Some(preview);
@@ -515,9 +647,34 @@ async fn prepare_preview(
     runtime: &SyncRuntime,
     store: &TaskStore,
 ) -> Result<(Preview, Plan), SyncFailure> {
+    prepare_preview_inner(runtime, store, None).await
+}
+
+async fn prepare_preview_checked(
+    runtime: &SyncRuntime,
+    store: &TaskStore,
+    authorization: &SyncAuthorization<'_>,
+) -> Result<(Preview, Plan), SyncFailure> {
+    prepare_preview_inner(runtime, store, Some(authorization)).await
+}
+
+async fn prepare_preview_inner(
+    runtime: &SyncRuntime,
+    store: &TaskStore,
+    authorization: Option<&SyncAuthorization<'_>>,
+) -> Result<(Preview, Plan), SyncFailure> {
     let config = runtime.config()?;
     let (local, meta) = store.sync_snapshot()?;
     let remote = request_checked(&config, None).await?;
+    let mut authorized_records = local.clone();
+    for (key, value) in &remote.records {
+        authorized_records
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    if let Some(authorization) = authorization {
+        authorization.check_records(&authorized_records)?;
+    }
     if !meta.vault_id.is_empty()
         && (meta.vault_id != remote.vault_id
             || remote.revision < meta.revision
@@ -567,6 +724,8 @@ async fn prepare_preview(
                 }
                 let title = if key == GOALS {
                     "目标与已保存对话".into()
+                } else if key == BEAD_WORKS {
+                    "拼豆作品与拼放进度".into()
                 } else {
                     value["title"]
                         .as_str()
@@ -592,10 +751,16 @@ async fn prepare_preview(
 pub async fn commit_sync(
     runtime: tauri::State<'_, SyncRuntime>,
     store: tauri::State<'_, TaskStore>,
+    capabilities: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
+    profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
     preview_id: String,
     choices: BTreeMap<String, String>,
 ) -> Result<Receipt, String> {
     let _guard = runtime.gate.lock().await;
+    let authorization = SyncAuthorization {
+        capabilities: &capabilities,
+        profile: &profile,
+    };
     let preview = runtime
         .preview
         .lock()
@@ -603,7 +768,21 @@ pub async fn commit_sync(
         .clone()
         .filter(|p| p.id == preview_id)
         .ok_or("检查结果已失效，请重新检查更改")?;
-    let receipt = commit_prepared(&runtime, &store, &preview, &choices)
+    let mut authorization_records = preview.local.clone();
+    for (key, value) in &preview.remote.records {
+        authorization_records
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    authorization
+        .check_records(&authorization_records)
+        .map_err(|error| error.message)?;
+    let receipt = authorization
+        .during_records(&authorization_records, || {
+            commit_prepared_authorized(&runtime, &store, &preview, &choices, || {
+                authorization.check_records(&authorization_records)
+            })
+        })
         .await
         .map_err(|error| error.message)?;
     *runtime.preview.lock().map_err(|_| "同步状态不可用")? = None;
@@ -611,12 +790,24 @@ pub async fn commit_sync(
     Ok(receipt)
 }
 
+#[cfg(test)]
 async fn commit_prepared(
     runtime: &SyncRuntime,
     store: &TaskStore,
     preview: &Preview,
     choices: &BTreeMap<String, String>,
 ) -> Result<Receipt, SyncFailure> {
+    commit_prepared_authorized(runtime, store, preview, choices, || Ok(())).await
+}
+
+async fn commit_prepared_authorized(
+    runtime: &SyncRuntime,
+    store: &TaskStore,
+    preview: &Preview,
+    choices: &BTreeMap<String, String>,
+    authorize: impl Fn() -> Result<(), SyncFailure>,
+) -> Result<Receipt, SyncFailure> {
+    authorize()?;
     let config = runtime.config()?;
     if hash(&config) != preview.config_hash {
         return Err(SyncFailure::new(
@@ -639,8 +830,10 @@ async fn commit_prepared(
         return Err("请先为每个冲突选择保留的版本。".into());
     }
     validate_records(&merged)?;
+    authorize()?;
     // Durable recovery copy before either side can change, including both conflict versions.
     let snapshot = store.sync_recovery(&current, &preview.remote)?;
+    authorize()?;
     let remote = request_checked(
         &config,
         Some(
@@ -655,6 +848,7 @@ async fn commit_prepared(
     {
         return Err("服务端确认内容不一致，未覆盖本机数据，请重新检查。".into());
     }
+    authorize()?;
     store.sync_apply_checked(&preview.local, &preview.meta, &remote, snapshot)
 }
 

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "jniNamespace": "com.tideplan.mobile",
+  "products": {
+    "personal": {
+      "applicationId": "com.tideplan.mobile",
+      "name": "Oceanseo",
+      "edition": "personal",
+      "channel": "live"
+    }
+  }
+}

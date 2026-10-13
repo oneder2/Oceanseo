@@ -3,6 +3,7 @@ use crate::credentials::CredentialCipher;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use tauri::Manager;
 
 pub struct HostRuntime {
     pub path: PathBuf,
@@ -73,11 +74,16 @@ impl HostRuntime {
             Err(_) => Err("无法读取采集凭据".into()),
         }
     }
+    #[cfg(test)]
     fn write(&self, values: &BTreeMap<String, Credential>) -> Result<(), String> {
-        use std::io::Write;
         let raw = self
             .cipher
             .encode(&serde_json::to_string(values).map_err(|_| "凭据编码失败")?)?;
+        self.write_encoded(&raw)
+    }
+
+    fn write_encoded(&self, raw: &str) -> Result<(), String> {
+        use std::io::Write;
         let temp = self.path.with_extension("tmp");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -115,7 +121,33 @@ pub async fn save_host_credential(
     host_id: String,
     url: String,
     token: String,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
     runtime: tauri::State<'_, HostRuntime>,
+    policy: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
+) -> Result<(), String> {
+    let profile = app.state::<crate::profiles::ProfileRuntime>();
+    let personal = if let Some(scope) = personal_scope {
+        crate::personal_workspaces::require_personal(&app)?;
+        Some(
+            app.state::<crate::personal_workspaces::PersonalRuntime>()
+                .host(&scope, &app)?,
+        )
+    } else {
+        None
+    };
+    let runtime = personal.as_deref().unwrap_or(runtime.inner());
+
+    save_credential(runtime, &policy, &profile, host_id, url, token).await
+}
+
+async fn save_credential(
+    runtime: &HostRuntime,
+    policy: &crate::capabilities::CapabilityRuntime,
+    profile: &crate::profiles::ProfileRuntime,
+    host_id: String,
+    url: String,
+    token: String,
 ) -> Result<(), String> {
     uuid::Uuid::parse_str(&host_id).map_err(|_| "主机编号无效")?;
     let _guard = runtime.gate.lock().await;
@@ -134,14 +166,32 @@ pub async fn save_host_credential(
         }
         values.insert(host_id, Credential { url, token });
     }
-    runtime.write(&values)
+    let encoded = runtime
+        .cipher
+        .encode(&serde_json::to_string(&values).map_err(|_| "凭据编码失败")?)?;
+    policy.with_writes(profile, &["infrastructure"], || {
+        runtime.write_encoded(&encoded)
+    })
 }
 #[tauri::command]
 pub async fn host_credential_configured(
     host_id: String,
     url: String,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
     runtime: tauri::State<'_, HostRuntime>,
 ) -> Result<bool, String> {
+    let personal = if let Some(scope) = personal_scope {
+        crate::personal_workspaces::require_personal(&app)?;
+        Some(
+            app.state::<crate::personal_workspaces::PersonalRuntime>()
+                .host(&scope, &app)?,
+        )
+    } else {
+        None
+    };
+    let runtime = personal.as_deref().unwrap_or(runtime.inner());
+
     let _guard = runtime.gate.lock().await;
     Ok(runtime.read()?.get(&host_id).is_some_and(|c| c.url == url))
 }
@@ -150,8 +200,23 @@ pub async fn check_host_endpoint(
     host_id: String,
     url: String,
     source: String,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
     runtime: tauri::State<'_, HostRuntime>,
+    policy: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
 ) -> Result<Value, String> {
+    let profile = app.state::<crate::profiles::ProfileRuntime>();
+    let personal = if let Some(scope) = personal_scope {
+        crate::personal_workspaces::require_personal(&app)?;
+        Some(
+            app.state::<crate::personal_workspaces::PersonalRuntime>()
+                .host(&scope, &app)?,
+        )
+    } else {
+        None
+    };
+    let runtime = personal.as_deref().unwrap_or(runtime.inner());
+
     let credential = if source == "collector" {
         let _guard = runtime.gate.lock().await;
         Some(
@@ -167,7 +232,14 @@ pub async fn check_host_endpoint(
     } else {
         return Err("检查类型无效".into());
     };
-    probe(&url, credential.as_ref().map(|c| c.token.as_str())).await
+    policy
+        .while_authorized(
+            &profile,
+            "infrastructure",
+            "write",
+            probe(&url, credential.as_ref().map(|c| c.token.as_str())),
+        )
+        .await
 }
 async fn probe(url: &str, token: Option<&str>) -> Result<Value, String> {
     let url = endpoint(url)?;
@@ -549,5 +621,65 @@ mod tests {
             }
             thread.join().unwrap();
         }
+    }
+    #[tokio::test]
+    async fn queued_host_credential_save_rechecks_policy_after_gate_wait() {
+        use crate::capabilities::{
+            tests::{account, install_test_permissions, profile},
+            CapabilityRuntime,
+        };
+        use std::sync::Arc;
+        let temp = tempfile::tempdir().unwrap();
+        let profile = Arc::new(profile(
+            &temp.path().join("client"),
+            &account("https://sync.example.com"),
+        ));
+        let policy = Arc::new(CapabilityRuntime::open(&profile).unwrap());
+        install_test_permissions(&policy, &profile, &[]);
+        let runtime = Arc::new(HostRuntime {
+            path: profile.data_dir.join("host-credentials.json"),
+            cipher: CredentialCipher::plain(),
+            gate: tokio::sync::Mutex::new(()),
+        });
+        let host = uuid::Uuid::new_v4().to_string();
+        let url = "https://collector.example.com".to_string();
+        save_credential(
+            &runtime,
+            &policy,
+            &profile,
+            host.clone(),
+            url.clone(),
+            "a".repeat(43),
+        )
+        .await
+        .unwrap();
+        let before = std::fs::read(&runtime.path).unwrap();
+        let guard = runtime.gate.lock().await;
+        let queued = runtime.clone();
+        let queued_policy = policy.clone();
+        let queued_profile = profile.clone();
+        let worker = tokio::spawn(async move {
+            save_credential(
+                &queued,
+                &queued_policy,
+                &queued_profile,
+                host,
+                url,
+                "b".repeat(43),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!worker.is_finished());
+        install_test_permissions(&policy, &profile, &[("infrastructure", "write")]);
+        drop(guard);
+        let result = tokio::time::timeout(Duration::from_secs(3), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result
+            .unwrap_err()
+            .contains("module_permission_denied:infrastructure:write"));
+        assert_eq!(std::fs::read(&runtime.path).unwrap(), before);
     }
 }

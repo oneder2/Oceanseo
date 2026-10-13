@@ -7,6 +7,7 @@ export function useFullscreen(onError: (message: string) => void) {
   const [fullscreen, setFullscreen] = useState(false);
   const [busy, setBusy] = useState(false);
   const changing = useRef(false);
+  const browserExpanded = useRef(false);
 
   useEffect(() => {
     if (platform.mobile) return;
@@ -15,8 +16,8 @@ export function useFullscreen(onError: (message: string) => void) {
     const sync = async () => {
       try {
         const value = isTauri()
-          ? await getCurrentWindow().isFullscreen()
-          : Boolean(document.fullscreenElement);
+          ? await getCurrentWindow().isMaximized()
+          : browserExpanded.current;
         if (active) setFullscreen(value);
       } catch {
         // A failed background query should not interrupt the current workspace.
@@ -47,13 +48,17 @@ export function useFullscreen(onError: (message: string) => void) {
     try {
       if (isTauri()) {
         const appWindow = getCurrentWindow();
-        const current = await appWindow.isFullscreen();
-        await appWindow.setFullscreen(exit ? false : !current);
-        setFullscreen(await appWindow.isFullscreen());
+        // Maximization respects the desktop work area reserved for system panels.
+        if (await appWindow.isFullscreen()) await appWindow.setFullscreen(false);
+        const current = await appWindow.isMaximized();
+        if (exit || current) await appWindow.unmaximize();
+        else await appWindow.maximize();
+        setFullscreen(await appWindow.isMaximized());
       } else {
+        // Browser preview expands the application within the browser window.
         if (document.fullscreenElement) await document.exitFullscreen();
-        else if (!exit) await document.documentElement.requestFullscreen();
-        setFullscreen(Boolean(document.fullscreenElement));
+        browserExpanded.current = exit ? false : !browserExpanded.current;
+        setFullscreen(browserExpanded.current);
       }
     } catch {
       onError("无法切换全屏，请稍后重试");

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Tideplan",
-  "version": "0.18.0",
+  "version": "1.0.0",
   "identifier": "com.tideplan.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -33,16 +33,20 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["oceanseo"]
+        "schemes": [
+          "oceanseo"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage"],
+    "targets": [
+      "deb"
+    ],
     "category": "Productivity",
-    "shortDescription": "短期、中期与长期计划桌面助手",
-    "longDescription": "为 Linux Mint、Ubuntu 和 Debian 设计的本地桌面计划助手。",
+    "shortDescription": "模块化个人管理与共享工作区",
+    "longDescription": "Oceanseo 开源个人版：可自由组合工具的工作区、本地待办、生活计划与拼豆创作。",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

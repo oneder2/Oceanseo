@@ -32,15 +32,29 @@ def private_mode(path: Path) -> bool:
     return stat.S_IMODE(path.stat().st_mode) & 0o077 == 0
 
 
+def snapshot_uri(path: Path) -> str:
+    # Online backups can retain WAL journal mode even though all committed
+    # pages are in the standalone snapshot. Ordinary mode=ro can then try to
+    # create WAL/SHM files, which correctly fails in our read-only sandbox.
+    # immutable must never ignore pending transactions in an active database.
+    for suffix in ("-wal", "-journal", "-shm"):
+        sidecar = path.with_name(path.name + suffix)
+        if sidecar.is_symlink() or (sidecar.exists() and (
+            not sidecar.is_file() or (suffix != "-shm" and sidecar.stat().st_size > 0)
+        )):
+            fail("backup is not a standalone snapshot")
+    return path.resolve().as_uri() + "?mode=ro&immutable=1"
+
+
 def integrity_check(path: Path) -> str:
-    uri = f"file:{path.resolve()}?mode=ro"
+    uri = snapshot_uri(path)
     with sqlite3.connect(uri, uri=True) as connection:
         row = connection.execute("PRAGMA integrity_check").fetchone()
         return str(row[0]) if row else ""
 
 
 def table_names(path: Path) -> set[str]:
-    uri = f"file:{path.resolve()}?mode=ro"
+    uri = snapshot_uri(path)
     with sqlite3.connect(uri, uri=True) as connection:
         return {
             str(row[0])
@@ -94,6 +108,8 @@ def audit(args: argparse.Namespace) -> dict[str, object]:
     if not candidates:
         fail("no SQLite backup found")
     latest = candidates[0]
+    if latest.samefile(database):
+        fail("backup must not be the live database")
     if not private_mode(latest):
         fail("latest backup is not private")
     age_seconds = max(0.0, time.time() - latest.stat().st_mtime)

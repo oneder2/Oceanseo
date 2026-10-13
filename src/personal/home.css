@@ -1,0 +1,85 @@
+.personal-home { container-type: inline-size; max-width: 1180px; margin: 0 auto; padding-bottom: 40px; }
+.personal-home-time { display: flex; align-items: center; justify-content: space-between; padding: 12px 0 30px; border-bottom: 1px solid #dce2d9; gap: 30px; }
+.personal-home-kicker { font-size: 10px; letter-spacing: .17em; color: #8a948a; }
+.personal-home-time h2 { font-size: clamp(24px,3vw,38px); font-weight: 500; line-height: 1.5; color: var(--scene-ink); margin: 14px 0; letter-spacing: .03em; }
+.personal-home-time p { font-size: 12px; color: #899386; }
+.personal-home-time time { display: flex; align-items: baseline; font-variant-numeric: tabular-nums; font-size: clamp(42px,6vw,80px); letter-spacing: -.06em; font-weight: 300; color: var(--scene-ink); }
+.personal-home-time time span { font-size: 18px; margin-left: 12px; letter-spacing: 0; color: #9aa396; }
+.personal-home-widgets { display: grid; grid-template-columns: .85fr 1.15fr; gap: 20px; margin: 26px 0; }
+.personal-weather,.personal-calendar { padding: 24px; border: 1px solid #dce3d8; border-radius: 12px; background: #ffffffa6; }
+.personal-home-widgets header { display: flex; align-items: center; gap: 8px; color: var(--scene-accent); }
+.personal-home-widgets h3 { font-size: 13px; font-weight: 500; margin: 0; flex: 1; }
+.personal-weather>strong { display: block; margin-top: 25px; font-size: 54px; font-weight: 350; color: var(--scene-ink); }
+.personal-weather>strong span { font-size: 18px; color: #8b9688; }
+.personal-weather>p { font-size: 12px; color: #7d8978; }
+.personal-weather>small { display: block; font-size: 10px; color: #939c8f; line-height: 1.7; }
+.personal-weather form { display: flex; gap: 8px; margin: 18px 0 8px; }
+.personal-weather form label { min-width: 0; flex: 1; }
+.personal-weather input { width: 100%; background: white; border: 1px solid #d7dfd4; border-radius: 6px; padding: 8px; font-size: 12px; }
+.personal-weather button,.personal-home-tasks header>button { background: var(--scene-accent); color: white; padding: 8px 12px; border: 0; border-radius: 6px; font-size: 12px; }
+.personal-calendar header>button { background: none; border: 1px solid #dce2d8; color: #697563; padding: 3px 9px; border-radius: 4px; }
+.personal-calendar-grid { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 4px; margin-top: 16px; }
+.personal-calendar-grid .calendar-weekday { text-align: center; color: #9aA292; padding: 4px; font-size: 10px; }
+.personal-calendar-grid button { border: 0; background: none; border-radius: 6px; padding: 9px 0; color: #65705d; position: relative; font-size: 12px; }
+.personal-calendar-grid button.is-today { color: white; background: var(--scene-accent); }
+.personal-calendar-grid button small { position: absolute; right: 2px; bottom: 0; font-size: 8px; }
+.personal-calendar>p { font-size: 10px; color: #939d8e; margin: 14px 0 0; }
+.personal-home-tasks { border-top: 1px solid #dce2d9; padding-top: 24px; }
+.personal-home-tasks header { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
+.personal-home-tasks header>div { flex: 1; }
+.personal-home-tasks h3 { font-size: 20px; font-weight: 500; color: var(--scene-ink); margin: 8px 0; }
+.personal-home-tasks h3 span { font-size: 13px; color: #919c89; margin-left: 6px; }
+.personal-home-tasks select { padding: 7px; background: none; border: 1px solid #d7dfd4; border-radius: 6px; font-size: 12px; max-width: 160px; }
+.personal-home-tasks header>button { display: flex; align-items: center; gap: 5px; }
+.personal-home-task { display: flex; align-items: center; gap: 14px; width: 100%; background: none; border: 0; border-bottom: 1px solid #e1e7dd; text-align: left; padding: 16px 4px; color: var(--scene-accent); }
+.personal-home-task>span:nth-child(2) { flex: 1; }
+.personal-home-task strong { display: block; color: #485642; font-size: 13px; font-weight: 500; }
+.personal-home-task small { display: block; margin-top: 5px; font-size: 10px; color: #909b88; }
+.personal-home-empty { text-align: center; padding: 35px; color: #96a18e; font-size: 12px; }
+.personal-home-empty button { padding: 8px 14px; background: none; border: 1px dashed #bbc8b1; border-radius: 6px; color: var(--scene-accent); }
+:root[data-workspace-style="technical"] .personal-shell .workspace { font-variant-numeric: tabular-nums; }
+:root[data-workspace-style="executive"] .personal-shell .task-card { padding-block: 10px; }
+:root[data-workspace-style="study"] .personal-shell .board { gap: 24px; }
+@media(max-width:850px) { .personal-home-widgets { grid-template-columns: 1fr; } .personal-home-time { gap: 10px; } .personal-home-tasks header { flex-wrap: wrap; } }
+@media(prefers-reduced-motion:reduce) { .personal-shell * { scroll-behavior: auto; } }
+
+/* A daylight desk: the clock is the visual anchor, widgets stay quiet. */
+.personal-home-time { position: relative; isolation: isolate; overflow: hidden; min-height: 220px; padding: 30px 34px; border: 1px solid var(--scene-line); border-radius: 20px; background: linear-gradient(120deg, #ffffffde, color-mix(in srgb, var(--scene-accent) 8%, white)); }
+.personal-home-time::after { content: ''; position: absolute; z-index: -1; width: 410px; height: 410px; border: 1px solid color-mix(in srgb, var(--scene-accent) 12%, transparent); border-radius: 50%; right: -100px; bottom: -280px; box-shadow: 0 0 0 30px color-mix(in srgb, var(--scene-accent) 3%, transparent), 0 0 0 60px color-mix(in srgb, var(--scene-accent) 3%, transparent), 0 0 0 90px color-mix(in srgb, var(--scene-accent) 2%, transparent); pointer-events: none; }
+.personal-home-kicker { font-family: Outfit, sans-serif; font-size: 11px; letter-spacing: .13em; color: var(--scene-muted); }
+.personal-home-time h2 { font-size: clamp(24px, 3vw, 34px); font-weight: 500; line-height: 1.55; margin: 14px 0 10px; }
+.personal-home-time p { color: var(--scene-muted); margin-bottom: 0; }
+.personal-home-time time { font-family: Outfit, 'Noto Sans CJK SC', sans-serif; font-size: clamp(48px, 6vw, 88px); font-weight: 350; letter-spacing: -.045em; white-space: nowrap; }
+.personal-home-time time span { color: var(--scene-muted); font-size: 16px; min-width: 22px; }
+.personal-home-widgets { gap: 18px; margin: 22px 0 30px; }
+.personal-weather, .personal-calendar { background: #ffffffd9; border-color: var(--scene-line); border-radius: 16px; padding: 24px; }
+.personal-home-widgets h3 { color: var(--scene-ink); font-size: 14px; font-weight: 550; }
+.personal-weather>strong { font-family: Outfit, sans-serif; font-size: 56px; font-weight: 400; }
+.personal-weather>p, .personal-weather>small, .personal-weather>strong span, .personal-calendar>p { color: var(--scene-muted); }
+.personal-weather>small, .personal-calendar>p { font-size: 11px; }
+.personal-calendar-grid button { color: var(--scene-ink); transition: background 150ms; min-height: 34px; }
+.personal-calendar-grid button:hover:not(.is-today) { background: var(--scene-surface); }
+.personal-calendar-grid .calendar-weekday { color: var(--scene-muted); font-size: 11px; }
+.personal-home-tasks { border-color: var(--scene-line); }
+.personal-home-tasks h3 { font-weight: 550; }
+.personal-home-task { border-color: var(--scene-line); border-radius: 8px; padding-inline: 10px; transition: background 180ms; }
+.personal-home-task:hover { background: #ffffffb3; }
+.personal-home-task strong { color: var(--scene-ink); font-size: 14px; }
+.personal-home-task small, .personal-home-tasks h3 span, .personal-home-empty { color: var(--scene-muted); font-size: 12px; }
+.personal-home-empty { border: 1px dashed var(--scene-line); border-radius: 14px; background: #ffffff60; }
+.personal-home-empty button { background: #fff; border-style: solid; margin-top: 6px; }
+@container (max-width: 680px) {
+  .personal-home-time { padding: 24px; min-height: 200px; gap: 16px; }
+  .personal-home-time h2 { font-size: 24px; }
+  .personal-home-time time { font-size: 48px; }
+  .personal-home-widgets { grid-template-columns: 1fr; }
+  .personal-home-tasks header { flex-wrap: wrap; }
+}
+@container (max-width: 440px) {
+  .personal-home-time { align-items: flex-start; flex-direction: column; padding: 20px; gap: 12px; }
+  .personal-home-time h2 { margin-top: 8px; }
+  .personal-home-time h2 br { display: none; }
+  .personal-home-time time { font-size: 50px; }
+  .personal-weather, .personal-calendar { padding: 18px; }
+  .personal-home-tasks header>div { flex-basis: 100%; }
+}

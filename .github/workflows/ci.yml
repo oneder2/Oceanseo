@@ -23,6 +23,8 @@ jobs:
       - run: npm run test:accounts-server
       - run: npm run test:diagnostic-contract
       - run: npm run build
+      - run: npm run test:bundle
+      - run: npm run test:release-linux
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings

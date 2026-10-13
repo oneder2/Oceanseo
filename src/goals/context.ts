@@ -5,6 +5,7 @@ import type { WorkDashboard } from "../workMonitorStore";
 import { dateKey } from "../dateUtils";
 import { platform } from "../platform";
 import type { Destination, GoalState } from "./model";
+import { can } from "../modules/capabilities";
 export interface Target {
   id: string;
   title: string;
@@ -17,7 +18,7 @@ export function businessTargets(
   work: WorkDashboard | null,
 ): Target[] {
   return [
-    ...life.training
+    ...(can("fitness") ? life.training : [])
       .filter((p) => !p.archived)
       .map((p) => ({
         id: p.id,
@@ -28,19 +29,19 @@ export function businessTargets(
           trainingDates(p).at(-1) ||
           p.startDate,
       })),
-    ...life.trips.map((p) => ({
+    ...(can("travel") ? life.trips : []).map((p) => ({
       id: p.id,
       title: p.title,
       destination: "travel" as const,
       date: p.startDate,
     })),
-    ...purchases.map((p) => ({
+    ...(can("shopping-list") ? purchases : []).map((p) => ({
       id: p.id,
       title: p.name + (p.checked ? "（已采购）" : ""),
       destination: "shopping-list" as const,
       date: "",
     })),
-    ...(work?.projects ?? []).map((p) => ({
+    ...(can("work-monitor") ? work?.projects ?? [] : []).map((p) => ({
       id: p.id,
       title: p.name,
       destination: "work-monitor" as const,
@@ -57,7 +58,7 @@ export function planningContext(
   return {
     today: dateKey(),
     platform: platform.name,
-    availableDestinations: platform.mobile ? ["task", "fitness", "travel", "shopping-list"] : ["task", "fitness", "travel", "shopping-list", "work-monitor"],
+    availableDestinations: (platform.mobile ? ["task", "fitness", "travel", "shopping-list"] : ["task", "fitness", "travel", "shopping-list", "work-monitor"]).filter(id => can(id === "task" ? "tasks" : id as Exclude<Destination, "task">, "write")),
     clarification: s.proposals
       .filter((p) => p.status === "pending")
       .slice(-1)
@@ -72,7 +73,7 @@ export function planningContext(
     goals: s.goals,
     actions: s.actions,
     capacity: s.preferences,
-    tasks: tasks.slice(0, 300).map((t) => ({
+    tasks: (can("tasks") ? tasks : []).slice(0, 300).map((t) => ({
       id: t.id,
       title: t.title,
       horizon: t.horizon,

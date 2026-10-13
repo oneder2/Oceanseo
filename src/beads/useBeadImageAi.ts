@@ -86,20 +86,15 @@ export function useBeadImageAi(
   }
   async function run(kind: "analyzing" | "generating") {
     if (!source || running.current) return;
+    if (!isTauri()) { setError("请在桌面应用中配置并使用 AI 服务"); return; }
     setError("");
-    if (!isTauri()) {
-      setError("浏览器预览不连接 AI，请在桌面应用中使用共用 AI 配置。");
-      return;
-    }
     running.current = true;
     const request = ++token.current;
     setPhase(kind);
     try {
       const imageDataUrl = encodeAiSource(source);
       if (kind === "analyzing") {
-        const result = await invoke<SubjectResult>("analyze_bead_image", {
-          request: { imageDataUrl },
-        });
+        const result = await invoke<SubjectResult>("analyze_bead_image", { request: { imageDataUrl } });
         if (request !== token.current) return;
         if (
           !result.subject ||
@@ -114,19 +109,18 @@ export function useBeadImageAi(
             .slice(0, 3000),
         );
       } else {
-        const result = await invoke<GeneratedResult>("generate_bead_image", {
-          request: {
-            imageDataUrl,
-            subject,
-            instructions,
-            style,
-            background,
-            imageModel: imageModel.trim(),
-            width: options.width,
-            height: options.height,
-            colors: options.colors,
-          },
-        });
+        const requestBody = {
+          imageDataUrl,
+          subject,
+          instructions,
+          style,
+          background,
+          imageModel: imageModel.trim(),
+          width: options.width,
+          height: options.height,
+          colors: options.colors,
+        };
+        const result = await invoke<GeneratedResult>("generate_bead_image", { request: requestBody });
         if (request !== token.current) return;
         if (!result.imageDataUrl?.startsWith("data:image/png;base64,"))
           throw Error("图片结果无效，请重试");

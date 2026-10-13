@@ -38,6 +38,32 @@ test("failed writes survive restart and override a stale database mirror", async
   assert.equal(storage.getItem(OUTBOX_PREFIX + "life"), null);
   assert.equal(restarted.status(), "saved");
 });
+test("unchanged renderer flush preserves a newer native commit while real edits still save", async () => {
+  const storage = memory();
+  let database: unknown;
+  const store = new ReliableState(storage, ["works"], async (_key, value) => { database = value; });
+  await store.persist("works", { title: "Renderer snapshot" });
+  database = { title: "Newer native operation" };
+  await store.persist("works", { title: "Renderer snapshot" });
+  await store.flush();
+  assert.deepEqual(database, { title: "Newer native operation" });
+  await store.persist("works", { title: "Actual user edit" });
+  assert.deepEqual(database, { title: "Actual user edit" });
+});
+test("equal values with a failed journal retry instead of being treated as unchanged", async () => {
+  const storage = memory();
+  let failing = true, saved: unknown;
+  const store = new ReliableState(storage, ["works"], async (_key, value) => {
+    if (failing) throw Error("disk offline");
+    saved = value;
+  });
+  await assert.rejects(store.persist("works", { title: "Keep pending" }));
+  failing = false;
+  await store.persist("works", { title: "Keep pending" });
+  assert.deepEqual(saved, { title: "Keep pending" });
+  assert.equal(store.status(), "saved");
+  assert.equal(storage.getItem(OUTBOX_PREFIX + "works"), null);
+});
 test("an older acknowledgement cannot clear a newer queued edit", async () => {
   const storage = memory();
   let finish!: () => void;

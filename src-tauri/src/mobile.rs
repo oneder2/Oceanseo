@@ -88,7 +88,9 @@ pub async fn configure_mobile_reminders(
     profile: tauri::State<'_, crate::profiles::ProfileRuntime>,
     enabled: bool,
     times: Vec<String>,
+    capabilities: tauri::State<'_, crate::capabilities::CapabilityRuntime>,
 ) -> Result<ReminderStatus, String> {
+    let enabled = enabled && capabilities.require(&profile, "tasks", "write").is_ok();
     bridge
         .0
         .run_mobile_plugin(

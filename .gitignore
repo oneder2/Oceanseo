@@ -1,6 +1,7 @@
 node_modules
 dist
 dist-landing
+dist-control-admin
 src-tauri/target
 src-tauri/gen/*
 !src-tauri/gen/android/
@@ -23,4 +24,5 @@ services/deployment/__pycache__/
 services/accounts/__pycache__/
 services/accounts/.env
 services/accounts/data/
+scripts/__pycache__/
 /private/

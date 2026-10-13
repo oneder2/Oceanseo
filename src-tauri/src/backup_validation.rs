@@ -67,6 +67,22 @@ fn list(v: &Value, max: usize, valid: impl Fn(&Value) -> bool) -> bool {
     v.as_array()
         .is_some_and(|a| a.len() <= max && a.iter().all(valid))
 }
+fn bead_completion(value: &Value, pattern: &Value) -> bool {
+    let mut seen = HashSet::new();
+    value.as_array().is_some_and(|indices| {
+        indices.len() <= 25600
+            && indices.iter().all(|index| {
+                index.as_u64().is_some_and(|i| {
+                    seen.insert(i)
+                        && pattern["cells"].as_array().is_some_and(|cells| {
+                            cells
+                                .get(i as usize)
+                                .is_some_and(|color| color.as_i64().is_some_and(|c| c >= 0))
+                        })
+                })
+            })
+    })
+}
 fn records(v: &Value, max: usize, valid: impl Fn(&Value) -> bool) -> bool {
     let mut ids = HashSet::new();
     v.as_array().is_some_and(|a| {
@@ -264,6 +280,70 @@ pub fn valid(key: &str, v: &Value) -> bool {
                             })
                     }))
         }
+        "tideplan.bead-works.v1" => {
+            v.is_null()
+                || (v["version"] == 1
+                    && v["activeId"].as_str().is_some()
+                    && records(&v["works"], 100, |w| {
+                        strings(
+                            w,
+                            &["id", "title", "createdAt", "updatedAt", "currentVersionId"],
+                        ) && w["archived"].is_boolean()
+                            && (w.get("deletedAt").map_or(
+                                w.get("deletedFromArchive").is_none(),
+                                |timestamp| {
+                                    w["archived"] == true
+                                        && w["deletedFromArchive"].is_boolean()
+                                        && timestamp.as_str().is_some_and(|s| {
+                                            chrono::DateTime::parse_from_rfc3339(s).is_ok()
+                                        })
+                                },
+                            ))
+                            && (w.get("progressVersionId").is_none()
+                                || w["progressVersionId"] == w["currentVersionId"])
+                            && records(&w["versions"], 20, |version| {
+                                strings(version, &["id", "label", "createdAt"])
+                                    && valid("tideplan.bead-pattern.v1", &version["pattern"])
+                                    && version.get("completedCells").is_none_or(|progress| {
+                                        bead_completion(progress, &version["pattern"])
+                                    })
+                            })
+                            && w["versions"].as_array().is_some_and(|versions| {
+                                versions.iter().any(|version| {
+                                    version["id"] == w["currentVersionId"]
+                                        && bead_completion(
+                                            &w["completedCells"],
+                                            &version["pattern"],
+                                        )
+                                })
+                            })
+                    })
+                    && v["works"].as_array().is_some_and(|works| {
+                        let live = |work: &Value| {
+                            work["archived"] == false && work.get("deletedAt").is_none()
+                        };
+                        (if works.iter().any(live) {
+                            works
+                                .iter()
+                                .any(|work| work["id"] == v["activeId"] && live(work))
+                        } else {
+                            v["activeId"] == ""
+                        }) && v.get("purgedWorkIds").is_none_or(|purged| {
+                            let mut ids = HashSet::new();
+                            purged.as_array().is_some_and(|items| {
+                                items.len() <= 10000
+                                    && items.iter().all(|id| {
+                                        id.as_str().is_some_and(|id| {
+                                            uuid::Uuid::parse_str(id)
+                                                .is_ok_and(|parsed| parsed.to_string() == id)
+                                                && ids.insert(id)
+                                                && !works.iter().any(|work| work["id"] == id)
+                                        })
+                                    })
+                            })
+                        })
+                    }))
+        }
         _ => false,
     }
 }
@@ -282,5 +362,25 @@ mod bead_tests {
         assert!(valid("tideplan.bead-pattern.v1", &p));
         p["palette"][0]["brand"] = json!("MARD");
         assert!(!valid("tideplan.bead-pattern.v1", &p));
+    }
+
+    #[test]
+    fn works_document_requires_active_unarchived_version_and_valid_patterns() {
+        let pattern = json!({"version":1,"title":"test","width":1,"height":1,"cells":[0],"palette":[{"hex":"#faf4c8","name":"MARD"}]});
+        let value = json!({"version":1,"activeId":"work-1","works":[{"id":"work-1","title":"作品","createdAt":"2026-01-01","updatedAt":"2026-01-01","archived":false,"currentVersionId":"version-1","completedCells":[],"versions":[{"id":"version-1","label":"初始图纸","createdAt":"2026-01-01","pattern":pattern.clone()}]}]});
+        assert!(valid("tideplan.bead-works.v1", &value));
+        let mut archived = value.clone();
+        archived["works"][0]["archived"] = json!(true);
+        assert!(!valid("tideplan.bead-works.v1", &archived));
+        let mut corrupt = value.clone();
+        corrupt["works"][0]["versions"][0]["pattern"]["cells"] = json!([9]);
+        assert!(!valid("tideplan.bead-works.v1", &corrupt));
+        let mut wrong_progress = json!({"version":1,"activeId":"work-1","works":[{"id":"work-1","title":"作品","createdAt":"2026-01-01","updatedAt":"2026-01-01","archived":false,"currentVersionId":"version-1","progressVersionId":"version-2","completedCells":[0],"versions":[{"id":"version-1","label":"初始图纸","createdAt":"2026-01-01","pattern":pattern}]}]});
+        assert!(!valid("tideplan.bead-works.v1", &wrong_progress));
+        wrong_progress["works"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("progressVersionId");
+        assert!(valid("tideplan.bead-works.v1", &wrong_progress));
     }
 }

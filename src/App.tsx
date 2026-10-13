@@ -1,6 +1,11 @@
+import PersonalTaskBoard from "./personal/TaskBoard";
+import PersonalDesktopChrome from "./personal/DesktopChrome";
+import PersonalHome from "./personal/Home";
+import { activeWorkspace, personalEnabled, personalSnapshot, subscribePersonal, refreshPersonal } from "./personal/runtime";
+import { ownershipRank, taskOwnerLabel, taskOwner, PENDING } from "./personal/model";
 import { profileLocalStorage as localStorage, profileSessionStorage as sessionStorage } from "./profileStorage";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { isTauri } from "@tauri-apps/api/core";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { invoke, isTauri } from "./personal/invoke";
 import { platform, viewAvailable } from "./platform";
 import MobileNav from "./MobileNav";
 import MobileReminderPanel from "./MobileReminderPanel";
@@ -9,6 +14,7 @@ import AccountCenter from "./AccountCenter";
 import { useAutomaticSync } from "./useAutomaticSync";
 import { takeSyncView } from "./syncView";
 const HostPanel = lazy(() => import("./infrastructure/HostPanel"));
+const DataArchive = lazy(() => import("./modules/DataArchive"));
 import { useInfrastructure } from "./infrastructure/store";
 import { useHostMonitor } from "./infrastructure/monitor";
 import { hostEvents, maintenanceDraft } from "./infrastructure/model";
@@ -85,8 +91,11 @@ import { getAiSettings, saveAiSettings, testAiConnection } from "./aiSettingsSto
 import type { AiSettings } from "./aiSettingsStore";
 import { exportDiagnosticReport } from "./diagnosticReport";
 import { APP_STATE_KEYS, bootstrapAppData, persistAppState } from "./appDataStore";
-import { exportDataBackup, restoreDataBackup, selectDataBackup } from "./backupStore";
-import type { DataBackup } from "./backupStore";
+import { can, projectLife, requireStateWrite } from "./modules/capabilities";
+import { moduleForView, viewCatalog } from "./modules/catalog";
+import { useCapabilities } from "./modules/useCapabilities";
+import { exportDataBackup, exportWorkArchive, restoreDataBackup, selectDataBackup } from "./backupStore";
+import type { DataBackup, WorkArchive } from "./backupStore";
 import { dateKey } from "./dateUtils";
 import { countdownDays, loadCountdowns } from "./countdownStore";
 import { useDailyReminders } from "./useDailyReminders";
@@ -120,7 +129,7 @@ import type { Countdown, Horizon, MealPlan, PurchaseItemDraft, ReminderSettings,
 const AUTOSTART_INITIALIZED_KEY = "tideplan.autostart-initialized";
 const REMINDER_SETTINGS_KEY = "tideplan.reminders.v1";
 const DEFAULT_AI_BASE_URL = "https://api.openai.com/v1";
-const FALLBACK_APP_VERSION = "0.18.0";
+const FALLBACK_APP_VERSION = "1.0.0";
 const RESUMED_SYNC_VIEW = takeSyncView(sessionStorage);
 
 const horizons: Array<{
@@ -210,14 +219,36 @@ function aiSettingsErrorMessage(error: unknown) {
   const code = String(error);
   if (code.includes("ai_base_url_invalid")) return "BASE_URL 必须是有效的 HTTP 或 HTTPS 地址";
   if (code.includes("openai_api_key_invalid")) return "API_KEY 格式无效，请检查后重试";
+  if (code.includes("ai_settings_changed_retry")) return "AI 配置刚刚被更新，请确认当前内容后重新保存";
   if (code.includes("ai_settings_write_failed")) return "AI 配置无法写入本机应用目录";
   return "AI 配置未保存，请稍后重试";
 }
 
 export default function App() {
+  const capabilities = useCapabilities();
+  const personalDoc = useSyncExternalStore(subscribePersonal, personalSnapshot);
+  const personal = personalEnabled();
+  const personalWorkspace = activeWorkspace();
+  const brandAsset = "/brand/hedgehog.png";
+  const homeView = personal && !personalWorkspace?.main ? "all" : "overview";
   const [syncBusy, setSyncBusy] = useState(false);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [view, setView] = useState<View>(() => viewAvailable(RESUMED_SYNC_VIEW) ? RESUMED_SYNC_VIEW : "overview");
+  const [savedTasks, setTasks] = useState<Task[]>([]);
+  const tasks = can("tasks") ? savedTasks : [];
+  const [view, setView] = useState<View>(() => {
+    const saved = personal ? localStorage.getItem("oceanseo.scene.last-view") : RESUMED_SYNC_VIEW;
+    const previous = (saved === "bead-home" || saved === "bead-progress" ? "bead-studio" : saved) as View;
+    return previous && viewAvailable(previous) && (previous !== "overview" || !personal || personalWorkspace?.main) ? previous : homeView;
+  });
+  useEffect(() => { if (personal) localStorage.setItem("oceanseo.scene.last-view", view); }, [personal, view]);
+  useLayoutEffect(() => {
+    if (!viewAvailable(view) || (personal && view === "overview" && !personalWorkspace?.main)) {
+      const fallback = viewAvailable(homeView) ? homeView : (Object.keys(viewCatalog) as View[]).find(viewAvailable);
+      if (fallback) setView(fallback);
+    }
+    if (!can("tasks", "write")) setEditorOpen(false);
+    if (!can("tasks")) setNotebookTaskId(null);
+    if (!can("goals")) setGoalActionId("");
+  }, [capabilities, personalDoc, homeView, view]);
   useEffect(() => {
     if (platform.mobile) document.querySelector(".workspace")?.scrollTo(0, 0);
   }, [view]);
@@ -270,32 +301,46 @@ export default function App() {
   const [showAiApiKey, setShowAiApiKey] = useState(false);
   const [aiSettingsBusy, setAiSettingsBusy] = useState(false);
   const [aiSettingsError, setAiSettingsError] = useState("");
-  const [purchaseItems, setPurchaseItems] = useState(loadPurchaseItems);
-  const [mealPlan, setMealPlan] = useState(loadMealPlan);
+  const [savedPurchaseItems, setPurchaseItems] = useState(loadPurchaseItems);
+  const purchaseItems = can("shopping-list") ? savedPurchaseItems : [];
+  const [savedMealPlan, setMealPlan] = useState(loadMealPlan);
+  const mealPlan = can("meal-planner") ? savedMealPlan : null;
   const [mealCheckedItems, setMealCheckedItems] = useState(loadMealCheckedItems);
-  const [countdowns, setCountdowns] = useState(loadCountdowns);
+  const [savedCountdowns, setCountdowns] = useState(loadCountdowns);
+  const countdowns = can("countdowns") ? savedCountdowns : [];
   const [selectedCountdownId, setSelectedCountdownId] = useState<string | null>(null);
   const [appDataReady, setAppDataReady] = useState(false);
   const [appLoadError, setAppLoadError] = useState("");
+  useEffect(() => {
+    if (!appDataReady || !isTauri()) return;
+    let active = true;
+    void invoke<{ bundle: { operationId: string } } | null>("pending_bead_handoff")
+      .then(pending => { if (active && pending && viewAvailable("bead-studio")) setView("bead-studio"); })
+      .catch(() => { if (active) setToast("待复制作品暂时无法读取，原作品仍保留。请打开作品页面重试。"); });
+    return () => { active = false; };
+  }, [appDataReady]);
   const infrastructure = useInfrastructure(appDataReady);
-  const hostMonitor = useHostMonitor(infrastructure.data, infrastructure.loaded && !syncBusy, infrastructure.update);
+  const hostMonitor = useHostMonitor(infrastructure.data, can("infrastructure", "write") && infrastructure.loaded && !syncBusy, infrastructure.update);
   const [selectedHost, setSelectedHost] = useState("");
-  const calendarHostEvents = useMemo(() => hostEvents(infrastructure.data), [infrastructure.data]);
+  const calendarHostEvents = useMemo(() => can("infrastructure") ? hostEvents(infrastructure.data) : [], [infrastructure.data, capabilities, personalDoc]);
   function openHostTask(title:string,notes:string,day:string,reference:string) {
     if(!taskStoreReady || taskLoadError) { setToast("任务尚未成功读取，请稍后重试"); return; }
     const existing=tasks.find(t=>t.origin?.reference===reference);
     if(existing) { openTask(existing); return; }
     setDraft(maintenanceDraft(title,notes,day));setEditingId(null);setPendingOrigin({kind:"local",label:"主机与服务",reference});setConfirmDelete(false);setEditorOpen(true);
   }
-  const [life, setLife] = useState<LifeData>(emptyLife);
-  const lifeRef = useRef(life);
-  lifeRef.current = life;
+  const [savedLife, setLife] = useState<LifeData>(emptyLife);
+  const life = useMemo(() => projectLife(savedLife), [savedLife, capabilities, personalDoc]);
+  const lifeRef = useRef(savedLife);
+  lifeRef.current = savedLife;
   const [lifeReady, setLifeReady] = useState(false);
   const [lifeError, setLifeError] = useState("");
   const [lifeSelection, setLifeSelection] = useState<{id:string;date:string}|undefined>();
   const calendarLifeEvents = useMemo(()=>lifeEvents(life),[life]);
   function updateLife(update:(d:LifeData)=>LifeData) {
     const next=update(lifeRef.current);
+    try { requireStateWrite(APP_STATE_KEYS.life, lifeRef.current, next); }
+    catch (error) { setToast(String(error)); return false; }
     if(!isLifeData(next) || new TextEncoder().encode(JSON.stringify(next)).length > 2 * 1024 * 1024) {
       setToast("未保存：数据无效或超过 2 MB，请检查内容、减少路线数据后重试");
       return false;
@@ -309,17 +354,20 @@ export default function App() {
   const [backupBusy, setBackupBusy] = useState(false);
   const [diagnosticBusy, setDiagnosticBusy] = useState(false);
   const [pendingBackup, setPendingBackup] = useState<DataBackup | null>(null);
+  const [archiveBackup, setArchiveBackup] = useState<DataBackup | null>(null);
+  const [workArchive, setWorkArchive] = useState<WorkArchive | undefined>();
+  const [workArchiveError, setWorkArchiveError] = useState("");
   const [backupError, setBackupError] = useState("");
   const [toast, setToast] = useState("");
   const aiPurchaseItems = useMemo(() => createMealPurchaseItems(mealPlan, mealCheckedItems), [mealCheckedItems, mealPlan]);
   const allPurchaseItems = useMemo(() => [...purchaseItems, ...aiPurchaseItems], [aiPurchaseItems, purchaseItems]);
-  const goals = useGoals(appDataReady && taskStoreReady && !taskLoadError, tasks, setTasks);
-  const assistant = useAssistantState(appDataReady);
+  const goals = useGoals(appDataReady && taskStoreReady && !taskLoadError && (!personal || can("goals")), tasks, setTasks);
+  const assistant = useAssistantState(appDataReady && (!personal || can("goals")));
   const automaticSync = useAutomaticSync({
-    ready: appDataReady && taskStoreReady && goals.loaded && lifeReady && infrastructure.loaded && assistant.loaded,
-    blocked: syncBusy || taskBusy || notebookBusy || backupBusy || editorOpen || !!notebookTaskId || settingsOpen || accountOpen
-      || mobileMenuOpen || goals.busy || !!goals.error || !!appLoadError || !!taskLoadError || !!lifeError || !!infrastructure.error,
-    view, saved: tasks, savedGoals: goals.state, onBusy: setSyncBusy,
+    ready: appDataReady && taskStoreReady && (!can("goals") || goals.loaded) && lifeReady && infrastructure.loaded && (!can("goals") || assistant.loaded),
+    blocked: !(can("tasks", "write") || can("goals", "write") || can("bead-studio", "write")) || syncBusy || taskBusy || notebookBusy || backupBusy || editorOpen || !!notebookTaskId || settingsOpen || accountOpen
+      || !!archiveBackup || mobileMenuOpen || goals.busy || !!goals.error || !!appLoadError || !!taskLoadError || !!lifeError || !!infrastructure.error,
+    view, saved: savedTasks, savedGoals: goals.state, onBusy: setSyncBusy,
   });
   const [goalActionId, setGoalActionId] = useState("");
   const goalAction = goals.state.actions.find(a=>a.id===goalActionId);
@@ -344,7 +392,7 @@ export default function App() {
   },[life,goalActionId]);
   const { fullscreen, busy: fullscreenBusy, toggle: toggleFullscreen } = useFullscreen(setToast);
   const nextGoalAction = nextActions(goals.state,tasks,life,undefined,allPurchaseItems).ready[0];
-  const { available: notificationAvailable, sendTest, mobileStatus: mobileReminderStatus, mobileDetails, mobileChecking, refreshMobile } = useDailyReminders(tasks, countdowns, reminderSettings, calendarLifeEvents, appDataReady && lifeReady && taskStoreReady, (goals.state.preferences.checkins && nextGoalAction ? `下一步：${nextGoalAction.task?.title}，约 ${nextGoalAction.action.minutes} 分钟。打开总览开始。` : ""), infrastructure.data);
+  const { available: notificationAvailable, sendTest, mobileStatus: mobileReminderStatus, mobileDetails, mobileChecking, refreshMobile } = useDailyReminders(tasks, countdowns, { ...reminderSettings, enabled: reminderSettings.enabled && can("tasks", "write") }, calendarLifeEvents, appDataReady && lifeReady && taskStoreReady, (can("goals") && goals.state.preferences.checkins && nextGoalAction ? `下一步：${nextGoalAction.task?.title}，约 ${nextGoalAction.action.minutes} 分钟。打开总览开始。` : ""), can("infrastructure") ? infrastructure.data : undefined);
 
   useEffect(() => {
     if (!platform.mobile) return;
@@ -363,11 +411,11 @@ export default function App() {
         return true;
       }
       if (mobileMenuOpen) { setMobileMenuOpen(false); return true; }
-      if (view !== "overview") { setView("overview"); setGoalActionId(""); return true; }
+      if (view !== homeView) { setView(homeView); setGoalActionId(""); return true; }
       return false;
     };
     return () => { delete host.__tideplanBack; };
-  }, [view, mobileMenuOpen]);
+  }, [view, mobileMenuOpen, homeView]);
 
   useEffect(()=>{
     if(!appDataReady)return;
@@ -375,8 +423,8 @@ export default function App() {
   },[appDataReady]);
   useEffect(()=>{
     if(!lifeReady)return;
-    void persistAppState(APP_STATE_KEYS.life,life).catch(()=>undefined);
-  },[life,lifeReady]);
+    void persistAppState(APP_STATE_KEYS.life,savedLife).catch(()=>undefined);
+  },[savedLife,lifeReady]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -395,8 +443,10 @@ export default function App() {
         setCountdowns(loadCountdowns());
         setAppDataReady(true);
       })
-      .catch(() => {
-        if (active) setAppLoadError("本机数据库读取失败，已暂停生活数据编辑以保护原数据。请检查磁盘空间后重新载入。");
+      .catch((error) => {
+        if (active) setAppLoadError(String(error).includes("module_permission_denied:")
+          ? "当前空间暂不允许迁移旧资料，原内容已保留。可在偏好设置中导出恢复包，恢复权限后重新载入。"
+          : "本机数据库读取失败，已暂停生活数据编辑以保护原数据。可在偏好设置中导出恢复包，请检查磁盘空间后重新载入。");
       });
     return () => { active = false; };
   }, []);
@@ -459,28 +509,28 @@ export default function App() {
   }, [appDataReady, reminderSettings]);
 
   useEffect(() => {
-    if (!appDataReady) return;
-    void persistAppState(APP_STATE_KEYS.purchases, purchaseItems.filter((item) => item.source === "manual"))
+    if (!appDataReady || !can("shopping-list", "write")) return;
+    void persistAppState(APP_STATE_KEYS.purchases, savedPurchaseItems.filter((item) => item.source === "manual"))
       .catch(() => setToast("采购清单未写入数据库，已保留本地副本"));
-  }, [appDataReady, purchaseItems]);
+  }, [appDataReady, savedPurchaseItems]);
 
   useEffect(() => {
-    if (!appDataReady) return;
-    void persistAppState(APP_STATE_KEYS.mealPlan, mealPlan)
+    if (!appDataReady || !can("meal-planner", "write")) return;
+    void persistAppState(APP_STATE_KEYS.mealPlan, savedMealPlan)
       .catch(() => setToast("食谱未写入数据库，已保留本地副本"));
-  }, [appDataReady, mealPlan]);
+  }, [appDataReady, savedMealPlan]);
 
   useEffect(() => {
-    if (!appDataReady) return;
+    if (!appDataReady || !can("shopping-list", "write")) return;
     void persistAppState(APP_STATE_KEYS.mealChecked, mealCheckedItems)
       .catch(() => setToast("食谱勾选状态未写入数据库，已保留本地副本"));
   }, [appDataReady, mealCheckedItems]);
 
   useEffect(() => {
-    if (!appDataReady) return;
-    void persistAppState(APP_STATE_KEYS.countdowns, countdowns)
+    if (!appDataReady || !can("countdowns", "write")) return;
+    void persistAppState(APP_STATE_KEYS.countdowns, savedCountdowns)
       .catch(() => setToast("关键日期未写入数据库，已保留本地副本"));
-  }, [appDataReady, countdowns]);
+  }, [appDataReady, savedCountdowns]);
 
   useEffect(() => {
     if (!platform.desktop) {
@@ -536,21 +586,21 @@ export default function App() {
   }, [toast]);
 
   useEffect(() => {
-    if (!platform.workMonitor) return;
+    if (!platform.workMonitor || !can("work-monitor", "write")) return;
     void runScheduledWorkScan()
       .then((result) => {
-        if (result) {
+        if (result && can("work-monitor", "write")) {
           setWorkOverview(result);
           setToast("每周项目检查已完成");
         }
       })
-      .catch(() => setToast("自动项目检查未完成，请在工作观察中查看配置"));
-  }, []);
+      .catch(() => { if (can("work-monitor", "write")) setToast("自动项目检查未完成，请在工作观察中查看配置"); });
+  }, [capabilities, can("work-monitor", "write")]);
 
   useEffect(() => {
-    if (view !== "overview" || !platform.workMonitor) return;
+    if (view !== "overview" || !platform.workMonitor || !can("work-monitor")) { setWorkOverview(null); return; }
     void getWorkDashboard().then(setWorkOverview).catch(() => setWorkOverview(null));
-  }, [view]);
+  }, [view, capabilities, can("work-monitor")]);
 
   const activeTasks = tasks.filter((task) => !task.completedAt);
   const completedTasks = tasks.filter((task) => task.completedAt);
@@ -600,13 +650,14 @@ export default function App() {
         if (!query) return true;
         return `${task.title} ${task.notes}`.toLocaleLowerCase("zh-CN").includes(query);
       }),
-    );
-  }, [tasks, view, search]);
+    ).sort((a,b) => personalDoc ? ownershipRank(personalDoc, a.id) - ownershipRank(personalDoc,b.id) : 0);
+  }, [tasks, view, search, personalDoc]);
 
   function openNewTask(horizon: Horizon, startDate = "") {
+    if (!can("tasks", "write")) { setToast("当前空间不允许新增任务，已有资料仍保留"); return; }
     setEditingId(null);
     setPendingOrigin(null);
-    setDraft(readTaskDraft(null, { ...emptyDraft, horizon, startDate }));
+    setDraft(readTaskDraft(null, { ...emptyDraft, horizon, startDate, ...(personal ? { workspaceOwner: personalWorkspace!.id } : {}) }));
     setConfirmDelete(false);
     setEditorOpen(true);
   }
@@ -621,6 +672,7 @@ export default function App() {
       priority: task.priority,
       startDate: task.startDate ?? "",
       dueDate: task.dueDate,
+      ...(personalDoc ? { workspaceOwner: taskOwner(personalDoc, task.id) } : {}),
     }));
     setConfirmDelete(false);
     setEditorOpen(true);
@@ -674,15 +726,16 @@ export default function App() {
     event.preventDefault();
     const title = draft.title.trim();
     if (!title || taskBusy) return;
+    if (personal && !draft.workspaceOwner) { setToast("请选择所属工作区或待定"); return; }
 
     setTaskBusy(true);
     try {
       if (editingId) {
-        const updated = await updateTask(editingId, { ...draft, title });
+        const updated = await updateTask(editingId, { ...draft, title }, personal ? draft.workspaceOwner : undefined);
         setTasks((current) => current.map((task) => task.id === editingId ? updated : task));
         setToast("计划已更新");
       } else {
-        const created = await createTask({ ...draft, title }, pendingOrigin);
+        const created = await createTask({ ...draft, title }, pendingOrigin, personal ? draft.workspaceOwner : undefined);
         setTasks((current) => [created, ...current]);
         setToast("计划已加入");
       }
@@ -714,6 +767,7 @@ export default function App() {
     setTaskBusy(true);
     try {
       await deleteStoredTask(editingId);
+      if (personal) await refreshPersonal();
       localStorage.removeItem(taskDraftKey(editingId));
       localStorage.removeItem(notebookDraftKey(editingId));
       setTasks((current) => current.filter((task) => task.id !== editingId));
@@ -826,12 +880,37 @@ export default function App() {
     setBackupError("");
     try {
       const saved = await exportDataBackup();
-      if (saved) setToast("数据备份已保存");
+      if (saved) setToast(saved === "recovery" ? "恢复包已保存，包含数据库与未完成写入；请保留原应用资料" : "数据备份已保存");
     } catch {
       setBackupError("备份未导出，请先确认顶部保存状态，再检查保存位置和磁盘空间");
     } finally {
       setBackupBusy(false);
     }
+  }
+
+  async function openDataArchive() {
+    if (!isTauri() || backupBusy) return;
+    setBackupError("");
+    setWorkArchive(undefined);
+    setWorkArchiveError("");
+    try {
+      const snapshot = await invoke<DataBackup>("export_data_backup");
+      if (platform.desktop) {
+        try { setWorkArchive(await invoke<WorkArchive>("export_work_archive")); }
+        catch { setWorkArchiveError("工作观察历史暂时无法读取，请保留原资料库后重试。"); }
+      }
+      setArchiveBackup(snapshot);
+    }
+    catch { setToast("已有资料暂时无法读取。请保留原资料库，检查磁盘后重试。"); }
+  }
+
+  async function handleExportWorkArchive() {
+    if (!workArchive || backupBusy) return;
+    setBackupBusy(true);
+    setBackupError("");
+    try { if (await exportWorkArchive(workArchive)) setToast("工作观察历史已导出；这是只读档案，不是普通恢复备份"); }
+    catch { setBackupError("工作历史未导出，请检查保存位置和磁盘空间后重试。"); }
+    finally { setBackupBusy(false); }
   }
 
   async function handleExportDiagnostics() {
@@ -875,8 +954,8 @@ export default function App() {
     try {
       const selected = await selectDataBackup();
       if (selected) setPendingBackup(selected);
-    } catch {
-      setBackupError("无法读取该文件，请选择由潮汐计划生成的 JSON 备份");
+    } catch (error) {
+      setBackupError(String(error).includes("recovery_pending") ? String(error).replace(/^Error: recovery_pending：/, "") : "无法读取该文件，请选择由潮汐计划生成的 JSON 备份");
     } finally {
       setBackupBusy(false);
     }
@@ -902,6 +981,7 @@ export default function App() {
   }
 
   function addPurchaseItem(draft: PurchaseItemDraft) {
+    if (!can("shopping-list", "write")) { setToast("当前采购清单为只读"); return false; }
     const item = createPurchaseItem(draft);
     if (!item) return false;
     setPurchaseItems((current) => [item, ...current]);
@@ -911,6 +991,7 @@ export default function App() {
   }
 
   function editPurchaseItem(id: string, draft: PurchaseItemDraft) {
+    if (!can("shopping-list", "write")) { setToast("当前采购清单为只读"); return false; }
     const current = purchaseItems.find((item) => item.id === id);
     if (!current) return false;
     const updated = updatePurchaseItem(current, draft);
@@ -921,15 +1002,18 @@ export default function App() {
   }
 
   function handleMealPlanGenerated(plan: MealPlan) {
+    if (!can("meal-planner", "write")) { setToast("权限已变化，食谱尚未保存"); return; }
     setMealPlan(plan);
-    setMealCheckedItems([]);
+    if (can("shopping-list", "write")) setMealCheckedItems([]);
   }
 
   function toggleMealShoppingItem(key: string) {
+    if (!can("shopping-list", "write")) return;
     setMealCheckedItems((items) => items.includes(key) ? items.filter((item) => item !== key) : [...items, key]);
   }
 
   function togglePurchaseItem(id: string) {
+    if (!can("shopping-list", "write")) return;
     const manualItem = purchaseItems.find((item) => item.id === id);
     if (manualItem) {
       setPurchaseItems((items) => items.map((item) => item.id === id ? { ...item, checked: !item.checked, updatedAt: new Date().toISOString() } : item));
@@ -963,7 +1047,7 @@ export default function App() {
         ? "完成记录"
         : "所有计划";
   const subtitle =
-    view === "infrastructure" ? "看清每台主机的用途、运行状况与下一步维护。" : view === "goals" ? "先放下所有线索，再找到此刻可以走的一步。" : view === "people" ? "把关心的人与他们的偏好，变成计划的基础。" : view === "fitness" ? "让每个训练周期都有可执行的目标和真实记录。" : view === "travel" ? "从同行者的偏好出发，把日程连成路线。" : view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
+    personal && view === "overview" ? "天气、时间与所有工作区的待办，在这里汇合。" : view === "infrastructure" ? "看清每台主机的用途、运行状况与下一步维护。" : view === "goals" ? "先放下所有线索，再找到此刻可以走的一步。" : view === "people" ? "把关心的人与他们的偏好，变成计划的基础。" : view === "fitness" ? "让每个训练周期都有可执行的目标和真实记录。" : view === "travel" ? "从同行者的偏好出发，把日程连成路线。" : view === "bead-studio" ? "把喜欢的画面，变成一颗颗能拼出来的颜色。" : view === "overview"
       ? "把计划、时间、生活与工作放进同一条节奏里。"
       : view === "today"
       ? overdueCount
@@ -984,7 +1068,7 @@ export default function App() {
           : "按照时间跨度，安排手边与远方。";
 
   return (
-    <div className={`desktop-shell${platform.mobile ? " mobile-shell" : ""}${fullscreen ? " is-fullscreen" : ""}`}>
+    <div className={`desktop-shell${platform.mobile ? " mobile-shell" : ""}${fullscreen ? " is-fullscreen" : ""}${personal ? " personal-shell" : ""}`}>
       <header className="titlebar" onMouseDown={beginDrag}>
         <button
           className="titlebar-menu"
@@ -996,12 +1080,12 @@ export default function App() {
           <Menu size={17} />
         </button>
         <div className="titlebar-brand" aria-label="Oceanseo">
-          <span className="brand-mark" aria-hidden="true"><img src="/brand/hedgehog.png" alt="" width="32" height="32" draggable={false} /></span>
+          <span className="brand-mark" aria-hidden="true"><img src={brandAsset} alt="" width="32" height="32" draggable={false} /></span>
           <span>Oceanseo</span>
         </div>
-        <SaveStatus ready={appDataReady} goals={{ loaded: goals.loaded, busy: goals.busy, error: goals.error, onInspect: () => { setGoalActionId(""); setView("goals"); } }} />
+        <SaveStatus ready={appDataReady} goals={personal && !can("goals") ? undefined : { loaded: goals.loaded, busy: goals.busy, error: goals.error, onInspect: () => { setGoalActionId(""); setView("goals"); } }} />
         {automaticSync.status.state === "paused" && <button className="sync-status-button icon-button" type="button" aria-label="查看账号状态" title="账号有内容需要处理" onMouseDown={e => e.stopPropagation()} onClick={() => setAccountOpen(true)}><Cloud size={18} /></button>}
-        {!platform.mobile && <GoalChatLauncher name={assistant.state.persona.name} onOpen={()=>{setGoalActionId("");setView("goals");setMobileMenuOpen(false);}}/>}
+        {!platform.mobile && viewAvailable("goals") && <GoalChatLauncher name={assistant.state.persona.name} onOpen={()=>{setGoalActionId("");setView("goals");setMobileMenuOpen(false);}}/>}
         <button className="account-entry icon-button" type="button" aria-label="我的账号" title="我的账号" onMouseDown={event => event.stopPropagation()} onClick={() => { setSettingsOpen(false); setAccountOpen(true); }}><UserRound size={20} /></button>
         {platform.mobile && <button className="mobile-settings" type="button" aria-label="偏好设置" onClick={openPreferences}><Settings size={20}/></button>}
         {!platform.mobile && <div className="window-actions" onMouseDown={(event) => event.stopPropagation()}>
@@ -1025,7 +1109,7 @@ export default function App() {
             aria-label={fullscreen ? "退出全屏" : "进入全屏"}
             aria-pressed={fullscreen}
             aria-keyshortcuts="F11"
-            title={fullscreen ? "退出全屏（F11 / Esc）" : "进入全屏（F11）"}
+            title={fullscreen ? "退出全屏（F11 / Esc）" : "进入全屏，保留系统面板（F11）"}
           >
             {fullscreen ? <Minimize size={15} /> : <Maximize size={15} />}
           </button>
@@ -1045,7 +1129,7 @@ export default function App() {
 
           <WorkspaceNav view={view} onNavigate={next => { if (!viewAvailable(next)) return; setGoalActionId(""); setLifeSelection(undefined); setView(next); setMobileMenuOpen(false); }} />
 
-          <section className="progress-panel" aria-label="计划进度">
+          {<section className="progress-panel" aria-label="计划进度">
             <div className="progress-heading">
               <span>总进度</span>
               <strong>{completionRate}%</strong>
@@ -1054,9 +1138,10 @@ export default function App() {
               <span style={{ width: `${completionRate}%` }} />
             </div>
             <p>{tasks.length ? `${completedTasks.length} / ${tasks.length} 项已完成` : "从一件小事开始"}</p>
-          </section>
+          </section>}
 
           <div className="sidebar-footer">
+            {capabilities.environment === "preview" && capabilities.management.policies && <button type="button" onClick={() => { void invoke("open_control_center").catch(error => setToast(String(error))); }}><Settings size={18} /><span>测试管理中心</span><ChevronRight size={16} /></button>}
             <button type="button" onClick={() => { setMobileMenuOpen(false); setAccountOpen(true); }}><UserRound size={18} /><span>我的账号</span><ChevronRight size={16} /></button>
             <button type="button" onClick={() => { setMobileMenuOpen(false); openPreferences(); }}>
               <Settings size={18} />
@@ -1065,6 +1150,8 @@ export default function App() {
             </button>
           </div>
         </aside>
+
+        {personal && !platform.mobile && <PersonalDesktopChrome fullscreen={fullscreen} view={view} onError={setToast}/>}
 
         {mobileMenuOpen && <button className="sidebar-scrim" aria-label="关闭导航" onClick={() => setMobileMenuOpen(false)} />}
 
@@ -1076,7 +1163,7 @@ export default function App() {
               <p>{subtitle}</p>
             </div>
             <div className="head-actions">
-              {["today", "all", "completed"].includes(view) && (
+              {can("tasks", "write") && ["today", "all", "completed"].includes(view) && (
                 <label className="search-field">
                   <Search size={17} />
                   <span className="sr-only">搜索计划</span>
@@ -1098,10 +1185,13 @@ export default function App() {
           </section>
 
           {goalAction&&goalTask&&view===destinationView(goalAction)&&goalAction.destination!=="task"&&<section className="goal-handoff"><div><small>来自目标 · {goals.state.goals.find(g=>g.id===goalAction.goalId)?.title}</small><strong>{goalTask.title}</strong>{goalTask.notes&&<p>{goalTask.notes}</p>}</div><button onClick={()=>openNotebook(goalTask)}>事项记事本</button><button onClick={()=>void toggleTask(goalTask.id)}>{goalTask.completedAt?"恢复未完成":"这一步已完成"}</button><button onClick={()=>{setGoalActionId("");setView("goals");}}>返回目标</button></section>}
-          {view==="overview"&&goals.loaded&&<GoalFocus state={goals.state} tasks={tasks} life={life} purchases={allPurchaseItems} onOpen={openGoalAction} onOrganize={()=>setView("goals")}/>}
-          <PageLoadBoundary key={view}><Suspense fallback={<p className="workspace-loading" role="status" data-page-loading>正在打开{title}…</p>}>
-          {!appDataReady ? <div role="status"><p>{appLoadError || "正在读取本机数据…"}</p>{appLoadError && <button className="secondary-button" onClick={() => window.location.reload()}>重新载入</button>}</div> : view === "infrastructure" ? <HostPanel data={infrastructure.data} ready={infrastructure.loaded} error={infrastructure.error} update={infrastructure.update} selected={selectedHost} onSelect={setSelectedHost} tasks={tasks} onTask={openHostTask} monitor={hostMonitor} onToast={setToast} onAiSettings={()=>setSettingsOpen(true)}/> : view==="goals" ? <Suspense fallback={<p role="status">正在打开对话…</p>}><GoalWorkspace controller={goals} tasks={tasks} life={life} purchases={allPurchaseItems} targets={goalTargets} assistant={assistant} workspaceData={{tasks,countdowns,life,purchases:allPurchaseItems,mealPlan,work:workOverview,goals:goals.state,infrastructure:infrastructure.data,ready:goals.loaded,view}} configured={aiSettings?.apiKeyConfigured??false} onSettings={()=>setSettingsOpen(true)} onOpen={openGoalAction}/></Suspense> : ["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="fitness"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="travel"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? <BeadStudio onSettings={()=>setSettingsOpen(true)} /> : view === "overview" ? (
-            <HomeDashboard
+          {view==="overview"&&can("goals")&&goals.loaded&&<GoalFocus state={goals.state} tasks={tasks} life={life} purchases={allPurchaseItems} onOpen={openGoalAction} onOrganize={()=>setView("goals")}/>}
+          {capabilities.message && <p role="status">{capabilities.message}</p>}
+          {!viewAvailable(view) ? <section className="workspace-loading"><h2>当前空间暂无可用工具</h2><p>已有资料仍保留。联网后会自动检查权限。</p><button className="secondary-button" onClick={()=>void openDataArchive()} disabled={!isTauri()}>查看已有资料</button><button className="secondary-button" onClick={openPreferences}>打开数据设置</button></section> : <>
+          {!can(moduleForView(view)!, "write") && <p role="status">当前工具为只读，已有资料仍可查看；完整备份可在偏好设置中导出。</p>}
+          <fieldset style={{ display: "contents", border: 0, margin: 0, padding: 0, minWidth: 0 }} disabled={!["calendar", "bead-studio"].includes(view) && !can(moduleForView(view)!, "write")}>
+          <PageLoadBoundary key={`${view}:${can(moduleForView(view)!, "write")}`}><Suspense fallback={<p className="workspace-loading" role="status" data-page-loading>正在打开{title}…</p>}>
+          {!appDataReady ? <div role="status"><p>{appLoadError || "正在读取本机数据…"}</p>{appLoadError && <button className="secondary-button" onClick={() => window.location.reload()}>重新载入</button>}</div> : view === "infrastructure" ? <HostPanel data={infrastructure.data} ready={infrastructure.loaded} error={infrastructure.error} update={infrastructure.update} selected={selectedHost} onSelect={setSelectedHost} tasks={tasks} onTask={openHostTask} monitor={hostMonitor} onToast={setToast} onAiSettings={()=>setSettingsOpen(true)}/> : view==="goals" ? <Suspense fallback={<p role="status">正在打开对话…</p>}><GoalWorkspace controller={goals} tasks={tasks} life={life} purchases={allPurchaseItems} targets={goalTargets} assistant={assistant} workspaceData={{tasks,countdowns,life,purchases:allPurchaseItems,mealPlan,work:workOverview,goals:goals.state,infrastructure:infrastructure.data,ready:goals.loaded,view}} configured={aiSettings?.apiKeyConfigured??false} onSettings={()=>setSettingsOpen(true)} onOpen={openGoalAction}/></Suspense> : ["people","fitness","travel"].includes(view) ? (!lifeReady ? <p role="status">{lifeError||"正在读取人物与生活计划…"}</p> : view === "people" ? <PeoplePage data={life} update={updateLife}/> : view === "fitness" ? <FitnessPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="fitness"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/> : <TravelPage data={life} update={updateLife} selected={lifeSelection} seed={goalAction?.destination==="travel"?goalSeed:undefined} onSettings={()=>setSettingsOpen(true)}/>) : view === "bead-studio" ? <BeadStudio onSettings={()=>setSettingsOpen(true)} /> : view === "overview" ? (personal ? <PersonalHome tasks={tasks} onOpenTask={openTask} onNewTask={() => openNewTask("short")}/> : <HomeDashboard
               lifeEvents={calendarLifeEvents}
               hostEvents={calendarHostEvents}
               onOpenHost={event=>{setSelectedHost(event.hostId);setView("infrastructure");}}
@@ -1110,7 +1200,7 @@ export default function App() {
               countdowns={countdowns}
               purchaseItems={allPurchaseItems}
               mealPlan={mealPlan}
-              workDashboard={workOverview}
+              workDashboard={can("work-monitor") ? workOverview : null}
               reminderSettings={reminderSettings}
               reminderAvailable={notificationAvailable}
               onOpenTask={openTask}
@@ -1127,7 +1217,7 @@ export default function App() {
               onPlanGenerated={handleMealPlanGenerated}
               onToggleShoppingItem={toggleMealShoppingItem}
               onOpenAiSettings={() => setSettingsOpen(true)}
-              onOpenShoppingList={() => setView("shopping-list")}
+              onOpenShoppingList={() => { if (viewAvailable("shopping-list")) setView("shopping-list"); else setToast("请先为当前工作区添加采购清单工具"); }}
               onToast={setToast}
               planningContext={mealPlanningContext.text + (goalAction?.destination==="meal-planner"&&goalTask?`\n当前目标行动：${goalTask.title}\n条件：${goalTask.notes}`:"")}
               planningItemCount={mealPlanningContext.count}
@@ -1153,13 +1243,13 @@ export default function App() {
             />
           ) : view === "calendar" ? (
             <CalendarView
-              tasks={tasks}
-              countdowns={countdowns}
+              tasks={savedTasks}
+              countdowns={personal ? countdowns : savedCountdowns}
               onOpenTask={openTask}
               onOpenCountdown={openCountdown}
               onNewTask={(startDate) => openNewTask("short", startDate)}
-              lifeEvents={calendarLifeEvents}
-              hostEvents={calendarHostEvents}
+              lifeEvents={personal ? calendarLifeEvents : lifeEvents(savedLife)}
+              hostEvents={personal ? calendarHostEvents : hostEvents(infrastructure.data)}
               onOpenHost={event=>{setSelectedHost(event.hostId);setView("infrastructure");}}
               onOpenLife={event=>{setLifeSelection({id:event.targetId,date:event.date});setView(event.kind==="training"?"fitness":"travel");}}
             />
@@ -1171,8 +1261,11 @@ export default function App() {
               onSelectionHandled={() => setSelectedCountdownId(null)}
               onToast={setToast}
             />
+          ) : personal ? (
+            <PersonalTaskBoard key={view} tasks={visibleTasks} onOpen={openTask} onToggle={id => void toggleTask(id)} onNotebook={openNotebook} onNew={() => openNewTask("short")}/>
           ) : (
             <>
+              {personal && <div className="personal-task-notice"><strong>{personalWorkspace?.main ? "所有工作区共享同一份任务" : `${personalWorkspace?.name} 的任务优先显示`}</strong><span>本工作区 → 待定 → 其他工作区</span></div>}
               <section className="timeline-strip" aria-label="今日完成进度">
                 <div className="timeline-copy">
                   <span className="timeline-kicker">TODAY</span>
@@ -1220,6 +1313,7 @@ export default function App() {
                           </span>
                           {task.notes && <span className="task-notes">{task.notes}</span>}
                           <span className="task-meta">
+                            {personalDoc && <span className="task-workspace-label">{taskOwnerLabel(personalDoc, task.id)}</span>}
                             {task.startDate && <span><Clock3 size={13} />{formatDueDate(task.startDate)}开始</span>}
                             {task.dueDate && (
                               <span className={isTaskOverdue(task) ? "overdue" : ""}>
@@ -1272,6 +1366,7 @@ export default function App() {
             </>
           )}
           </Suspense></PageLoadBoundary>
+          </fieldset></>}
         </main>
       </div>
 
@@ -1307,6 +1402,7 @@ export default function App() {
                 <input data-dialog-initial maxLength={200} value={draft.title} onChange={(event) => changeTaskDraft({ ...draft, title: event.target.value })} placeholder="例如：整理本周工作重点" />
               </label>
 
+              {personalDoc && <label className="form-field"><span>所属工作区 · 必填</span><select aria-label="所属工作区" required value={draft.workspaceOwner ?? ""} onChange={event => changeTaskDraft({ ...draft, workspaceOwner: event.target.value })}><option value="" disabled>请选择工作区或待定</option><option value={PENDING}>待定</option>{personalDoc.workspaces.filter(w => !w.deleted).map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</select><small>这条任务在所有工作区共享，所属工作区优先展示。</small></label>}
               <fieldset className="form-field">
                 <legend>时间跨度</legend>
                 <div className="segmented-control">
@@ -1357,7 +1453,7 @@ export default function App() {
                 <span className="action-spacer" />
                 <button className="secondary-button" type="button" disabled={taskBusy} onClick={() => { localStorage.removeItem(taskDraftKey(editingId)); setEditorOpen(false); }}>放弃草稿</button>
                 <button className="secondary-button" type="button" disabled={taskBusy} onClick={() => setEditorOpen(false)}>暂存并关闭</button>
-                <button className="primary-button" type="submit" disabled={!draft.title.trim() || taskBusy}>
+                <button className="primary-button" type="submit" disabled={!can("tasks", "write") || !draft.title.trim() || taskBusy}>
                   <Check size={17} />保存计划
                 </button>
               </footer>
@@ -1382,7 +1478,7 @@ export default function App() {
               <label htmlFor="task-notebook">相关笔记</label>
               <textarea
                 id="task-notebook"
-                disabled={notebookBusy}
+                disabled={notebookBusy || !can("tasks", "write")}
                 data-dialog-initial
                 maxLength={4000}
                 value={notebookNotes}
@@ -1393,7 +1489,7 @@ export default function App() {
                 <span>{notebookNotes.length} / 4000</span>
                 <button className="secondary-button" type="button" disabled={notebookBusy} onClick={() => { localStorage.removeItem(notebookDraftKey(notebookTask.id)); setNotebookNotes(notebookTask.notes); }}>放弃草稿</button>
                 <button className="secondary-button" type="button" disabled={notebookBusy} onClick={() => setNotebookTaskId(null)}>取消</button>
-                <button className="primary-button" type="submit" disabled={notebookBusy}>
+                <button className="primary-button" type="submit" disabled={notebookBusy || !can("tasks", "write")}>
                   <Save size={16} />{notebookBusy ? "正在保存" : "保存笔记"}
                 </button>
               </footer>
@@ -1437,7 +1533,7 @@ export default function App() {
                 aria-label="开机自动启动"
               ><span /></button>
             </div>}
-            <div className="setting-row reminder-setting-row">
+            {<><div className="setting-row reminder-setting-row">
               <div className="setting-icon notification-icon">{reminderSettings.enabled ? <BellRing size={18} /> : <Bell size={18} />}</div>
               <div>
                 <strong>每日计划提醒</strong>
@@ -1488,9 +1584,10 @@ export default function App() {
               </label>
               <p>每日提醒会同时列出临近的关键日期，设为 0 时只提醒当天。</p>
             </div>}
+            </>}
             <details className="advanced-settings" open={advancedSettings} onToggle={event => setAdvancedSettings(event.currentTarget.open)}>
               <summary><SlidersHorizontal size={18} />高级与开发者设置</summary>
-            <section className="ai-settings-section" aria-label="AI 服务配置">
+            {<><section className="ai-settings-section" aria-label="AI 服务配置">
               <header>
                 <span className="setting-icon ai-setting-icon"><KeyRound size={18} /></span>
                 <div>
@@ -1546,6 +1643,7 @@ export default function App() {
               <p>连接测试会发送不含个人资料的小型请求，可能消耗服务额度。先保存修改，再测试。</p>
             </section>
             <MapSettings />
+            </>}
             <details className="technical-sync"><summary>同步诊断与兼容连接</summary><SyncSettings onBusy={setSyncBusy} automatic={automaticSync} /></details>
             <section className="diagnostic-section" aria-label="内测诊断">
               <header>
@@ -1569,6 +1667,7 @@ export default function App() {
                 </div>
               </header>
               <div className="backup-actions">
+                <button className="secondary-button" type="button" onClick={() => void openDataArchive()} disabled={backupBusy || !isTauri()}><DatabaseBackup size={15} />查看已有资料</button>
                 <button className="secondary-button" type="button" onClick={() => void handleExportBackup()} disabled={backupBusy || !isTauri()}><Download size={15} />导出备份</button>
                 <button className="secondary-button" type="button" onClick={() => void handleSelectBackup()} disabled={backupBusy || !isTauri()}><Upload size={15} />选择备份</button>
                 <span>{isTauri() ? "恢复前校验内容并自动备份现有数据；恢复成功后清除编辑草稿并重新载入。" : "请在桌面应用中使用备份功能。"}</span>
@@ -1587,7 +1686,7 @@ export default function App() {
               {sessionStorage.getItem("tideplan.restore-snapshot") && <p className="backup-error">上次恢复前的数据副本：{sessionStorage.getItem("tideplan.restore-snapshot")}</p>}
             </section>
             <div className="setting-note">
-              <span className="brand-mark" aria-hidden="true"><img src="/brand/hedgehog.png" alt="" width="32" height="32" draggable={false} /></span>
+              <span className="brand-mark" aria-hidden="true"><img src={brandAsset} alt="" width="32" height="32" draggable={false} /></span>
               <p>本机记录与账号记录分别保留。</p>
               <small>版本 {appVersion}</small>
             </div>
@@ -1595,6 +1694,7 @@ export default function App() {
         </div>
       )}
 
+      {archiveBackup && <Suspense fallback={<p role="status">正在打开已有资料…</p>}><DataArchive snapshot={archiveBackup} workArchive={workArchive} workArchiveError={workArchiveError} onClose={()=>setArchiveBackup(null)} onExport={()=>void handleExportBackup()} onExportWork={()=>void handleExportWorkArchive()} exporting={backupBusy} error={backupError}/></Suspense>}
       {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
       {(syncBusy || automaticSync.reloadRequired) && <div className="sync-working" role="dialog" aria-modal="true" aria-label="正在处理同步" tabIndex={-1} ref={el => { (el?.querySelector<HTMLButtonElement>('button') ?? el)?.focus(); }} onKeyDown={e => { if (e.key === "Tab") e.preventDefault(); }}>
         <div><Cloud size={30} /><p role="status">{automaticSync.reloadRequired ? "同步已保存，正在重新载入…" : "正在处理账号或同步，请稍候…"}</p>

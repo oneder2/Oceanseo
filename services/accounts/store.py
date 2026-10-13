@@ -134,7 +134,7 @@ class AccountStore:
     def device_fields(device_name, platform):
         if not isinstance(device_name, str) or not 1 <= len(device_name.strip()) <= 80 or any(unicodedata.category(c) == "Cc" for c in device_name):
             raise ValueError("device_name")
-        if platform not in ("linux", "android", "test"):
+        if platform not in ("linux", "android", "browser", "test"):
             raise ValueError("platform")
         return device_name.strip(), platform
 

@@ -15,6 +15,7 @@ import MonthJump from "./MonthJump";
 import type { LifeEvent } from "./life/model";
 import type { HostEvent } from "./infrastructure/model";
 import { calendarEventIndex, type CalendarEvent } from "./calendarEvents";
+import { can, canView } from "./modules/capabilities";
 
 interface CalendarViewProps {
   tasks: Task[];
@@ -61,10 +62,19 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
   const monthCountdowns = countdowns.filter((countdown) => countdown.targetDate.startsWith(monthPrefix)).length;
 
   function openEvent(event: CalendarEvent) {
+    if (readOnlyEvent(event)) return;
     if (event.type === "host") { onOpenHost?.(event.event); return; }
     if (event.type === "task") onOpenTask(event.task);
     else if (event.type === "life") onOpenLife?.(event.event);
     else onOpenCountdown(event.countdown);
+  }
+
+  function readOnlyEvent(event: CalendarEvent) {
+    if (event.type === "task") return !canView("all") || !can("tasks", "write");
+    if (event.type === "countdown") return !canView("countdowns") || !can("countdowns", "write");
+    if (event.type === "host") return !canView("infrastructure") || !can("infrastructure", "write");
+    const module = event.event.kind === "training" ? "fitness" : "travel";
+    return !canView(module) || !can(module, "write");
   }
 
   function eventTitle(event: CalendarEvent) {
@@ -122,10 +132,10 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
                 </div>
                 <div className="day-events">
                   {events.slice(0, 3).map((event, index) => (
-                    <button className={`calendar-event event-${event.kind}`} type="button" onClick={() => openEvent(event)} key={`${event.kind}-${index}`} title={`${event.label}：${eventTitle(event)}`}>
+                    <button className={`calendar-event event-${event.kind}`} type="button" disabled={readOnlyEvent(event)} onClick={() => openEvent(event)} key={`${event.kind}-${index}`} title={`${event.label}：${eventTitle(event)}${readOnlyEvent(event) ? " · 只读，相关工具未开放编辑" : ""}`}>
                       {event.kind === "completed" && <Check size={10} />}
                       {event.kind === "countdown" && <Hourglass size={9} />}
-                      <span>{eventTitle(event)}</span>
+                      <span>{readOnlyEvent(event) ? "只读 · " : ""}{eventTitle(event)}</span>
                     </button>
                   ))}
                   {events.length > 3 && <span className="more-events">还有 {events.length - 3} 项</span>}
@@ -142,12 +152,12 @@ export default function CalendarView({ tasks, countdowns, onOpenTask, onOpenCoun
             <span>{dateFromKey(selectedDate).getFullYear()}年{dateFromKey(selectedDate).getMonth() + 1}月</span>
             <h3>{dateFromKey(selectedDate).getDate()}日计划轨迹</h3>
           </div>
-          <button className="secondary-button" type="button" onClick={() => onNewTask(selectedDate)}><Plus size={15} />添加计划</button>
+          {can("calendar", "write") && can("tasks", "write") && <button className="secondary-button" type="button" onClick={() => onNewTask(selectedDate)}><Plus size={15} />添加计划</button>}
         </header>
         <div className="agenda-list">
           {visibleSelectedEvents.map((event, index) => (
-            <button className={`agenda-item event-${event.kind}`} type="button" key={`${event.kind}-${index}`} onClick={() => openEvent(event)}>
-              <span className="agenda-kind">{event.label}</span>
+            <button className={`agenda-item event-${event.kind}`} type="button" disabled={readOnlyEvent(event)} key={`${event.kind}-${index}`} onClick={() => openEvent(event)}>
+              <span className="agenda-kind">{event.label}{readOnlyEvent(event) ? " · 只读" : ""}</span>
               <strong>{eventTitle(event)}</strong>
               {event.type === "task" && event.task.priority === "important" && <Flag size={13} fill="currentColor" />}
               {event.type === "countdown" && <Hourglass size={13} />}

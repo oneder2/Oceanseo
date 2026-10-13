@@ -1,0 +1,47 @@
+name: Linux personal release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_INCREMENTAL: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:release-linux
+      - run: npm run release:linux
+      - run: npm run test:bundle
+      - name: Validate and stage DEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')"
+          package="src-tauri/target/release/bundle/deb/Tideplan_${version}_amd64.deb"
+          node scripts/linux-release-contract.mjs "$package"
+          mkdir -p release-artifacts
+          cp "$package" LICENSE THIRD_PARTY_NOTICES.md release-artifacts/
+          cd release-artifacts
+          sha256sum *.deb LICENSE THIRD_PARTY_NOTICES.md > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Oceanseo-Linux-personal-DEB
+          path: release-artifacts
+          if-no-files-found: error
+          retention-days: 14
+      - name: Clean reproducible build outputs
+        if: always()
+        run: npm run cleanup

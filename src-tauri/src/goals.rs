@@ -432,15 +432,22 @@ pub struct GoalReply {
     pub tasks: Vec<crate::tasks::TaskRecord>,
 }
 #[tauri::command]
-pub fn get_goal_state(
-    store: tauri::State<'_, crate::tasks::TaskStore>,
+pub async fn get_goal_state(
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<Option<Value>, String> {
-    store.goal_state()
+    crate::personal_workspaces::check_scope(&app, &personal_scope, "goals")?;
+    crate::personal_workspaces::scoped_store(app, personal_scope, |store| store.goal_state()).await
 }
 #[tauri::command]
-pub fn commit_goal_changes(
+pub async fn commit_goal_changes(
     request: GoalCommit,
-    store: tauri::State<'_, crate::tasks::TaskStore>,
+    app: tauri::AppHandle,
+    personal_scope: Option<String>,
 ) -> Result<GoalReply, String> {
-    store.commit_goals(request)
+    crate::personal_workspaces::check_scope(&app, &personal_scope, "goals")?;
+    crate::personal_workspaces::scoped_store(app, personal_scope.clone(), move |store| {
+        store.commit_goals_assigned(request, personal_scope)
+    })
+    .await
 }

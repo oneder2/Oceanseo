@@ -33,6 +33,7 @@ async fn two_clients_sync_over_real_http_conflict_retry_goals_and_auth() {
         endpoint: format!("http://127.0.0.1:{port}"),
         token: "tideplan-local-test-token-not-for-production-123456".into(),
         expected_vault_id: None,
+        workspace: None,
     };
     let a = TaskStore::open(&temp.path().join("a.sqlite")).unwrap();
     let b = TaskStore::open(&temp.path().join("b.sqlite")).unwrap();
@@ -147,6 +148,7 @@ async fn account_transport_is_vault_bound_and_keeps_legacy_data_out_of_v2() {
             expires_at: raw["session"]["expiresAt"].as_i64().unwrap(),
             device_name: raw["session"]["deviceName"].as_str().unwrap().into(),
             token: raw["token"].as_str().unwrap().into(),
+            workspace: None,
         }
     };
     let client = temp.path().join("client");
@@ -213,6 +215,7 @@ async fn account_transport_is_vault_bound_and_keeps_legacy_data_out_of_v2() {
         endpoint,
         token: bob.token.clone(),
         expected_vault_id: Some(bob.vault_id.clone()),
+        workspace: None,
     };
     assert!(request(&bob_config, None).await.unwrap().records.is_empty());
     let cross = Config {
@@ -285,4 +288,92 @@ fn secure_endpoint_policy_blocks_tokens_in_urls_and_cleartext_lan() {
 fn unsupported_documents_and_malformed_goals_are_rejected() {
     assert!(validate_records(&BTreeMap::from([("api_key".into(), Value::Null)])).is_err());
     assert!(validate_records(&BTreeMap::from([("goals".into(), json!({}))])).is_err());
+}
+
+#[tokio::test]
+async fn bead_workspace_two_stores_http_progress_restart_and_conflict() {
+    use std::io::BufRead;
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let mut child = std::process::Command::new("python3").current_dir(root)
+        .args(["-u", "-c", "import os,json; from services.accounts.server import create_server; s=create_server(('127.0.0.1',0),os.environ['TEST_ACCOUNTS_DB'],control_database=os.environ['TEST_CONTROL_DB'],environment='preview'); a=s.store.register('bead-user','Synthetic-password-123!',s.store.create_invite(),'Synthetic','test'); s.control.grant_role('bead-user','owner'); w=s.control.create_workspace(a['token'],'personal','Synthetic')['workspaces'][0]; print(json.dumps({'port':s.server_port,'a':a,'w':w}),flush=True); s.serve_forever()"])
+        .env("TEST_ACCOUNTS_DB", temp.path().join("accounts.sqlite"))
+        .env("TEST_CONTROL_DB", temp.path().join("control.sqlite"))
+        .stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let _server = Server(child);
+    let setup: Value = serde_json::from_str(&line).unwrap();
+    let config = Config {
+        endpoint: format!("http://127.0.0.1:{}", setup["port"]),
+        token: setup["a"]["token"].as_str().unwrap().into(),
+        expected_vault_id: Some(setup["w"]["vaultId"].as_str().unwrap().into()),
+        workspace: Some(crate::profiles::WorkspaceBinding {
+            version: 1,
+            environment: "preview".into(),
+            edition: "personal".into(),
+            id: setup["w"]["id"].as_str().unwrap().into(),
+            vault_id: setup["w"]["vaultId"].as_str().unwrap().into(),
+        }),
+    };
+    let a = TaskStore::open(&temp.path().join("desktop.sqlite")).unwrap();
+    let b_path = temp.path().join("phone.sqlite");
+    let b = TaskStore::open(&b_path).unwrap();
+    let work = uuid::Uuid::new_v4().to_string();
+    let version = uuid::Uuid::new_v4().to_string();
+    let doc = json!({"version":1,"activeId":work,"works":[{
+        "id":work,"title":"Synthetic work","createdAt":"2026-10-11","updatedAt":"2026-10-11",
+        "archived":false,"currentVersionId":version,"progressVersionId":version,"completedCells":[],
+        "versions":[{"id":version,"label":"Initial","createdAt":"2026-10-11","pattern":{
+            "version":1,"title":"Synthetic work","width":2,"height":1,"cells":[0,0],
+            "palette":[{"hex":"#faf4c8","name":"Legacy"}]
+        }}]
+    }]});
+    a.set_app_state(BEAD_WORKS, doc).unwrap();
+    let initial = request(&config, None).await.unwrap();
+    let (local, meta) = a.sync_snapshot().unwrap();
+    let saved = request(&config, Some(json!({"protocol":1,"vaultId":initial.vault_id,"expectedRevision":initial.revision,"records":local}))).await.unwrap();
+    a.sync_apply(&local, &meta, &saved, "synthetic".into())
+        .unwrap();
+    let (blocal, bmeta) = b.sync_snapshot().unwrap();
+    b.sync_apply(&blocal, &bmeta, &saved, "synthetic".into())
+        .unwrap();
+    let mut phone = b.app_state_value(BEAD_WORKS).unwrap().unwrap();
+    phone["works"][0]["completedCells"] = json!([0]);
+    b.set_app_state(BEAD_WORKS, phone).unwrap();
+    let (blocal, bmeta) = b.sync_snapshot().unwrap();
+    let body = json!({"protocol":1,"vaultId":saved.vault_id,"expectedRevision":saved.revision,"records":blocal});
+    let progress = request(&config, Some(body.clone())).await.unwrap();
+    assert!(request(&config, Some(body)).await.is_err()); // stale retry cannot overwrite
+    b.sync_apply(&blocal, &bmeta, &progress, "synthetic".into())
+        .unwrap();
+    let (alocal, ameta) = a.sync_snapshot().unwrap();
+    let (merged, conflicts) = merge(&ameta.base, &alocal, &progress.records, &BTreeMap::new());
+    assert!(conflicts.is_empty());
+    assert_eq!(merged[BEAD_WORKS]["works"][0]["completedCells"], json!([0]));
+    a.sync_apply(&alocal, &ameta, &progress, "synthetic".into())
+        .unwrap();
+    drop(b);
+    let b = TaskStore::open(&b_path).unwrap();
+    assert_eq!(
+        b.app_state_value(BEAD_WORKS).unwrap().unwrap()["works"][0]["completedCells"],
+        json!([0])
+    );
+    let (base, _) = a.sync_snapshot().unwrap();
+    let mut desktop = base.clone();
+    desktop.get_mut(BEAD_WORKS).unwrap()["works"][0]["title"] = json!("Edited offline");
+    let mut phone = base.clone();
+    phone.get_mut(BEAD_WORKS).unwrap()["works"][0]["completedCells"] = json!([]);
+    assert_eq!(merge(&base, &desktop, &phone, &BTreeMap::new()).1.len(), 1);
+    assert_eq!(base[BEAD_WORKS]["works"][0]["completedCells"], json!([0]));
+    let legacy = Config {
+        workspace: None,
+        expected_vault_id: Some(setup["a"]["vaultId"].as_str().unwrap().into()),
+        ..config
+    };
+    assert!(request(&legacy, None).await.unwrap().records.is_empty());
 }

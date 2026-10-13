@@ -7,6 +7,7 @@ import { applyAutomaticSync, AutomaticSyncScheduler, syncFailure, type Automatic
   type AutomaticSyncStatus, type SyncReceipt } from "./automaticSync";
 import { rememberSyncView } from "./syncView";
 import type { View } from "./types";
+import { platform } from "./platform";
 
 interface Options { ready: boolean; blocked: boolean; view: View; saved: unknown; savedGoals: unknown; onBusy: (busy: boolean) => void }
 export function useAutomaticSync(options: Options) {
@@ -58,7 +59,8 @@ export function useAutomaticSync(options: Options) {
         && document.activeElement.matches('input, textarea, select, [contenteditable="true"]'))
       // These views have no independent in-flight AI jobs or persistent inline
       // editors. Downloads reload all state consumers; other workspaces wait.
-      && ["overview", "today", "all", "completed", "calendar"].includes(latest.current.view);
+      && (["overview", "today", "all", "completed", "calendar"].includes(latest.current.view)
+        || (platform.name === "android" && latest.current.view === "bead-studio"));
     const current = new AutomaticSyncScheduler(currentProfileKey(), {
       canCheck, canCommit, status: setStatus, settings: setSettings,
       check: () => navigator.onLine

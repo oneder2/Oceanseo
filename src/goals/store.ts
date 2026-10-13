@@ -1,10 +1,12 @@
 import { profileLocalStorage as localStorage } from "../profileStorage";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "../personal/invoke";
 import { useEffect, useRef, useState } from "react";
 import { assertAppWritable, registerStateFlusher } from "../appDataStore";
 import { replacePreviewTasks, toTask, type TaskRecord } from "../taskStore";
 import type { Task } from "../types";
 import { executeDelivery } from "./dialogue";
+import { refreshPersonal } from "../personal/runtime";
+import { requireModule } from "../modules/capabilities";
 import {
   applyProposal,
   emptyGoals,
@@ -99,6 +101,7 @@ export function useGoals(
   ): Promise<GoalState> {
     try {
       assertAppWritable();
+      requireModule("goals");
     } catch (error) {
       return Promise.reject(error);
     }
@@ -117,6 +120,8 @@ export function useGoals(
           checks = [],
           undo = false,
         } = build(old, taskRef.current, operationId);
+      requireModule("goals");
+      if (created.length || changed.length || undo) requireModule("tasks");
       next.revision = old.revision + 1;
       next.operations = [...old.operations.slice(-1999), operationId];
       if (
@@ -144,6 +149,7 @@ export function useGoals(
         );
         if (!isGoalState(reply.state))
           throw Error("目标保存回执异常，请重新载入");
+        await refreshPersonal();
         value = reply.state;
         localStorage.removeItem(PENDING_KEY);
         const saved = reply.tasks.map(toTask);

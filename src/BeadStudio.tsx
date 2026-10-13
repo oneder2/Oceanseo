@@ -1,1 +1,1 @@
-export { default } from "./beads/BeadWorkbench";
+export { default } from "./beads/BeadModule";

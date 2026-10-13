@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Roll out service health endpoints and Caddy routes without touching databases or env files.
+# Update personal services; preserve the centrally managed reverse proxy and data.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -19,7 +19,6 @@ tar -czf - \
   services/deployment/oceanseo-accounts-backup-audit.service \
   services/deployment/oceanseo-accounts-backup-audit.timer \
   services/deployment/oceanseo-backup-alert@.service \
-  services/deployment/Caddyfile \
   | ssh Oceanseo "tar -xzf - -C '$remote_stage'"
 
 ssh Oceanseo "bash -s -- '$remote_stage'" <<'REMOTE'
@@ -41,7 +40,6 @@ if sudo test -e /etc/systemd/system/tideplan-backup-audit.timer; then sudo cp -a
 if sudo test -e /opt/oceanseo-accounts/services/deployment/backup-audit.py; then sudo cp -a /opt/oceanseo-accounts/services/deployment/backup-audit.py "$backup/accounts/backup-audit.py"; fi
 if sudo test -e /etc/systemd/system/oceanseo-accounts-backup-audit.service; then sudo cp -a /etc/systemd/system/oceanseo-accounts-backup-audit.service "$backup/oceanseo-accounts-backup-audit.service"; fi
 if sudo test -e /etc/systemd/system/oceanseo-accounts-backup-audit.timer; then sudo cp -a /etc/systemd/system/oceanseo-accounts-backup-audit.timer "$backup/oceanseo-accounts-backup-audit.timer"; fi
-sudo cp -a /etc/caddy/Caddyfile "$backup/Caddyfile"
 
 rollback_needed=true
 wait_for_port() {
@@ -71,7 +69,6 @@ rollback() {
   if sudo test -e "$backup/accounts/backup-audit.py"; then sudo install -m 755 "$backup/accounts/backup-audit.py" /opt/oceanseo-accounts/services/deployment/backup-audit.py; else sudo rm -f /opt/oceanseo-accounts/services/deployment/backup-audit.py; fi
   if sudo test -e "$backup/oceanseo-accounts-backup-audit.service"; then sudo install -m 644 "$backup/oceanseo-accounts-backup-audit.service" /etc/systemd/system/oceanseo-accounts-backup-audit.service; else sudo rm -f /etc/systemd/system/oceanseo-accounts-backup-audit.service; fi
   if sudo test -e "$backup/oceanseo-accounts-backup-audit.timer"; then sudo install -m 644 "$backup/oceanseo-accounts-backup-audit.timer" /etc/systemd/system/oceanseo-accounts-backup-audit.timer; else sudo rm -f /etc/systemd/system/oceanseo-accounts-backup-audit.timer; fi
-  sudo install -o root -g caddy -m 640 "$backup/Caddyfile" /etc/caddy/Caddyfile
   sudo systemctl daemon-reload
   sudo systemctl restart oceanseo-accounts tideplan-sync
   wait_for_port 127.0.0.1 4791
@@ -84,7 +81,6 @@ rollback() {
     done
   done
   sudo systemctl start tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer
-  sudo systemctl reload caddy
 }
 cleanup() {
   if [ "$rollback_needed" = true ]; then
@@ -105,10 +101,6 @@ sudo install -m 755 "$stage/services/deployment/backup-audit.py" /opt/oceanseo-a
 sudo install -m 644 "$stage/services/deployment/oceanseo-accounts-backup-audit.service" /etc/systemd/system/oceanseo-accounts-backup-audit.service
 sudo install -m 644 "$stage/services/deployment/oceanseo-accounts-backup-audit.timer" /etc/systemd/system/oceanseo-accounts-backup-audit.timer
 sudo install -m 644 "$stage/services/deployment/oceanseo-backup-alert@.service" /etc/systemd/system/oceanseo-backup-alert@.service
-sudo install -o root -g caddy -m 640 "$stage/services/deployment/Caddyfile" /etc/caddy/Caddyfile
-if ! sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
-  exit 1
-fi
 sudo systemctl stop tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer || true
 sudo systemctl daemon-reload
 sudo systemctl restart oceanseo-accounts tideplan-sync
@@ -138,7 +130,6 @@ start_audit() {
 start_audit tideplan-backup-audit.service
 start_audit oceanseo-accounts-backup-audit.service
 sudo systemctl start tideplan-backup-audit.timer oceanseo-accounts-backup-audit.timer
-sudo systemctl reload caddy
 sudo systemctl is-active oceanseo-accounts tideplan-sync tideplan-monitor caddy
 if ! wait_for curl --fail --silent --show-error --max-time 2 --resolve oceanseo.gellaronline.cc:443:127.0.0.1 https://oceanseo.gellaronline.cc/health/accounts; then
   exit 1

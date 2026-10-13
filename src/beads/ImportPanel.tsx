@@ -3,6 +3,7 @@ import AiImagePanel from "./AiImagePanel";
 import { validSize } from "./model";
 import { BRANDS, PALETTE_NOTICE, type BeadBrand } from "./palettes";
 import type { useImageImport } from "./useImageImport";
+import { can } from "../modules/capabilities";
 
 export default function ImportPanel({
   importer,
@@ -64,12 +65,13 @@ export default function ImportPanel({
         </button>
         <button
           aria-pressed={method === "ai"}
-          disabled={disabled || busy}
+          disabled={disabled || busy || !can("bead-studio", "ai")}
           onClick={() => setMethod("ai")}
         >
           AI 提炼主体
         </button>
       </div>
+      {!can("bead-studio", "ai") && <p className="bead-help">当前空间尚未开放 AI 提炼，本机转图仍可使用。</p>}
       <div hidden={method !== "ai"}>
         <AiImagePanel
           importer={importer}

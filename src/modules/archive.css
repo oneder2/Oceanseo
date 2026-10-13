@@ -1,0 +1,48 @@
+.archive-backdrop { z-index: 180; }
+.data-archive { width: min(1040px, calc(100vw - 40px)); height: min(86dvh, 900px); min-height: 280px; display: flex; flex-direction: column; background: #fff; color: #183b3e; border: 1px solid #c5dcd8; border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+.archive-heading { display: flex; align-items: flex-start; gap: 20px; padding: 24px 28px; background: #eff7f6; border-bottom: 1px solid #d5e5e2; }
+.archive-heading > div { flex: 1; min-width: 0; }
+.archive-heading > div > span { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #42696b; }
+.archive-heading h2 { font-size: 24px; line-height: 1.4; margin: 10px 0; font-weight: 700; }
+.archive-heading p { font-size: 15px; line-height: 1.65; margin: 0; }
+.archive-heading .icon-button { min-width: 44px; min-height: 44px; }
+.archive-body { display: grid; grid-template-columns: 210px minmax(0,1fr); flex: 1; min-height: 0; }
+.archive-body nav { overflow: auto; padding: 12px; background: #f7faf9; border-right: 1px solid #d5e5e2; }
+.archive-body nav button { width: 100%; min-height: 46px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; justify-content: space-between; border: 0; border-radius: 5px; background: transparent; text-align: left; font-size: 15px; }
+.archive-body nav button[aria-current="page"] { background: #dfeee9; color: #195b50; font-weight: 700; box-shadow: inset 3px 0 #287b6a; }
+.archive-body nav button:hover { background: #eaf3f0; }
+.archive-reader { padding: 24px 28px; overflow: auto; min-width: 0; font-size: 16px; line-height: 1.75; user-select: text; }
+.archive-reader > h3 { font-size: 20px; margin: 0 0 20px; }
+.data-archive .secondary-button { min-height: 44px; }
+.archive-records { display: grid; gap: 18px; }
+.archive-record { padding: 16px 0 16px 18px; border-left: 3px solid #b9d6cf; border-bottom: 1px solid #e4eeeb; min-width: 0; }
+.archive-fields { margin: 0; display: grid; gap: 12px; }
+.archive-fields > div { display: grid; grid-template-columns: minmax(76px,110px) minmax(0,1fr); gap: 12px; min-width: 0; }
+.archive-fields dt { color: #42686a; font-size: 14px; }
+.archive-fields dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.archive-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.archive-empty-value { color: #607f80; font-size: 15px; }
+.data-archive footer { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 16px 24px; border-top: 1px solid #d5e5e2; background: #f8fbfa; }
+.data-archive footer > span { flex: 1; font-size: 14px; line-height: 1.6; }
+.data-archive footer button { min-height: 44px; flex-shrink: 0; }
+.data-archive footer .backup-error { flex-basis: 100%; margin: 0; }
+.archive-beads h3 { font-size: 20px; margin: 0; }
+.archive-bead-preview { padding: 18px; margin: 20px 0; overflow: auto; border: 1px solid #c5d8d6; background: #e9edeb; }
+.archive-bead-preview canvas { display: block; max-width: 100%; height: auto; min-width: min(100%,200px); image-rendering: pixelated; background-color: white; background-image: conic-gradient(#e5eeeb 25%, transparent 0 50%, #e5eeeb 0 75%, transparent 0); background-size: 16px 16px; border: 1px solid #618e88; }
+.archive-palette { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.archive-palette li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 15px; }
+.archive-palette li > span:first-child { width: 24px; height: 24px; border: 1px solid #9dbbb5; border-radius: 3px; }
+.archive-palette strong { font-family: ui-monospace, monospace; }
+@media (max-width: 640px) {
+  .data-archive { width: calc(100vw - 16px); height: calc(100dvh - 24px); border-radius: 8px; }
+  .archive-heading { padding: 16px; gap: 8px; }
+  .archive-heading h2 { font-size: 21px; }
+  .archive-body { display: flex; flex-direction: column; }
+  .archive-body nav { display: flex; gap: 6px; overflow: auto; padding: 10px; flex-shrink: 0; border-right: 0; border-bottom: 1px solid #d5e5e2; }
+  .archive-body nav button { width: auto; flex-shrink: 0; min-height: 44px; }
+  .archive-reader { flex: 1; padding: 18px 16px; }
+  .archive-record { padding-left: 12px; }
+  .archive-fields > div { grid-template-columns: 1fr; gap: 2px; }
+  .data-archive footer { padding: 12px 16px; flex-wrap: wrap; }
+  .data-archive footer > span { flex-basis: 100%; }
+}

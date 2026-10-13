@@ -17,6 +17,18 @@ oceanseo.gellaronline.cc {
 	request_body {
 		max_size 17MB
 	}
+	# Personal-only template. Existing commercial routes must migrate before applying.
+	redir /manage /manage/ 308
+	handle_path /manage/* {
+		root * /var/www/oceanseo-admin/current
+		try_files {path} /index.html
+		header {
+			Cache-Control "no-store"
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+			X-Robots-Tag "noindex, nofollow"
+		}
+		file_server
+	}
 	handle /v2/* {
 		reverse_proxy 127.0.0.1:4791 {
 			transport http {

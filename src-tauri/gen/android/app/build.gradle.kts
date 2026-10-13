@@ -1,4 +1,5 @@
 import java.util.Properties
+import groovy.json.JsonSlurper
 
 plugins {
     id("com.android.application")
@@ -15,6 +16,15 @@ val tauriProperties = Properties().apply {
 
 val signingNames = listOf("TIDEPLAN_KEYSTORE_PATH", "TIDEPLAN_KEYSTORE_PASSWORD", "TIDEPLAN_KEY_ALIAS", "TIDEPLAN_KEY_PASSWORD")
 val hasReleaseSigning = signingNames.all { !System.getenv(it).isNullOrBlank() }
+val oceanseoAndroidProduct = providers.gradleProperty("oceanseoAndroidProduct").orElse("personal").get()
+require(oceanseoAndroidProduct == "personal") { "Unknown Android product" }
+require((System.getenv("OCEANSEO_ANDROID_PRODUCT") ?: "personal") == oceanseoAndroidProduct) { "Android Gradle/native product mismatch" }
+val oceanseoManifest = JsonSlurper().parse(rootProject.file("../../android-products.json")) as Map<*, *>
+require(oceanseoManifest["version"] == 1 && oceanseoManifest["jniNamespace"] == "com.tideplan.mobile")
+val oceanseoProducts = oceanseoManifest["products"] as Map<*, *>
+val oceanseoProduct = oceanseoProducts[oceanseoAndroidProduct] as Map<*, *>
+val oceanseoApplicationId = oceanseoProduct["applicationId"] as String
+require(oceanseoApplicationId == "com.tideplan.mobile")
 
 android {
     compileSdk = 36
@@ -80,6 +90,8 @@ androidComponents {
     finalizeDsl { extension ->
         val suffix = providers.gradleProperty("tideplanInternalSuffix").orElse(".debug").get()
         require(suffix in listOf(".debug", ".syncqa", ".infraqa", ".uiuxqa"))
+        require(extension.namespace == "com.tideplan.mobile") { "Shared Kotlin/JNI namespace must stay stable" }
+        extension.defaultConfig.applicationId = oceanseoApplicationId
         extension.buildTypes.getByName("debug").applicationIdSuffix = suffix
     }
 }

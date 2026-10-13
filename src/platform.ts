@@ -1,7 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { View } from "./types";
+import { viewSupportsPlatform, type ModulePlatform } from "./modules/catalog";
+import { canView } from "./modules/capabilities";
 
-export type Platform = "browser" | "linux" | "windows" | "macos" | "android" | "ios";
+export type Platform = ModulePlatform;
 export const platform = {
   name: "browser" as Platform,
   mobile: false,
@@ -21,5 +23,5 @@ export async function initializePlatform() {
 }
 
 export function viewAvailable(view: View) {
-  return !platform.mobile || !["work-monitor", "bead-studio"].includes(view);
+  return viewSupportsPlatform(view, platform.name) && canView(view);
 }
